@@ -1,11 +1,17 @@
 #!/usr/bin/env bun
 import { createInterface, type Interface } from "node:readline";
+import http from "node:http";
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const API = (process.env.PERIDOT_API_URL || "https://peridot.ai/api").replace(/\/+$/, "");
+const WEB = (process.env.PERIDOT_WEB_URL || "https://peridot.ai").replace(/\/+$/, "");
+// Registered as a redirect URI of the Google OAuth client (same one the desktop app uses)
+const GOOGLE_PORT = 53682;
 const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "peridot");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
@@ -26,6 +32,9 @@ let config: Config = {};
 let history: Msg[] = [];
 let rl: Interface;
 let abort: AbortController | null = null;
+let cancelLogin: (() => void) | null = null;
+/** Four dots, like the Peridot logo */
+const LOGO = "∷";
 
 async function saveConfig() {
   await mkdir(CONFIG_DIR, { recursive: true });
@@ -108,7 +117,7 @@ async function streamAnswer(): Promise<string> {
 
 async function send(text: string) {
   history.push({ role: "user", content: text });
-  process.stdout.write(`\n${mint("◆")} `);
+  process.stdout.write(`\n${mint(LOGO)} `);
   try {
     const answer = await streamAnswer();
     if (answer) history.push({ role: "model", content: answer });
@@ -192,17 +201,117 @@ async function cmdUsage() {
   }
 }
 
-async function cmdLogin() {
-  const email = await ask("Email: ");
-  if (!email) return;
-  const password = await ask("Password: ", true);
-  const data = await api<{ token: string; user: { email: string } }>("/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
+function openBrowser(url: string) {
+  const [cmd, args] =
+    process.platform === "darwin" ? ["open", [url]]
+    : process.platform === "win32" ? ["cmd", ["/c", "start", "", url.replace(/&/g, "^&")]]
+    : ["xdg-open", [url]];
+  try { spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref(); } catch {}
+}
+
+const page = (title: string, extra = "") =>
+  `<!doctype html><meta charset="utf-8"><title>Peridot</title><body style="font-family:sans-serif;background:#141413;color:#e8e6e0;text-align:center;padding-top:20vh"><h2 id="m">${title}</h2>${extra}`;
+
+/**
+ * Listens on 127.0.0.1 until `handle` returns the final value (or throws). Used to receive the
+ * result of a sign-in that happens in the browser. Times out after 5 minutes, Ctrl+C cancels.
+ */
+function loopback(port: number, handle: (url: URL, res: http.ServerResponse) => string | undefined) {
+  let settle!: { ok: (v: string) => void; fail: (e: Error) => void };
+  const result = new Promise<string>((ok, fail) => (settle = { ok, fail }));
+  const server = http.createServer((req, res) => {
+    try {
+      const value = handle(new URL(req.url || "/", "http://127.0.0.1"), res);
+      if (value !== undefined) settle.ok(value);
+    } catch (e) {
+      settle.fail(e as Error);
+    }
   });
-  config.token = data.token;
-  await saveConfig();
-  console.log(`Signed in as ${bold(data.user?.email ?? email)}.`);
+  const timer = setTimeout(() => settle.fail(new Error("Sign-in timed out.")), 5 * 60 * 1000);
+  cancelLogin = () => settle.fail(new Error("Sign-in cancelled."));
+  server.on("error", (e) => settle.fail(e));
+  const ready = new Promise<number>((resolve) =>
+    server.listen(port, "127.0.0.1", () => resolve((server.address() as any).port))
+  );
+  const done = result.finally(() => { clearTimeout(timer); cancelLogin = null; server.close(); server.closeAllConnections?.(); });
+  done.catch(() => {});
+  return { ready, result: done };
+}
+
+/** Email (or Google) sign-in on the Peridot website; the site hands the token back to us. */
+async function loginViaWebsite(): Promise<string> {
+  const state = randomBytes(16).toString("hex");
+  const server = loopback(0, (url, res) => {
+    if (url.pathname !== "/callback") { res.writeHead(404).end(); return; }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (url.searchParams.get("state") !== state) { res.end(page("Invalid sign-in request.")); throw new Error("Sign-in failed (state mismatch)."); }
+    const token = url.searchParams.get("token");
+    if (!token) { res.end(page("Sign-in cancelled.")); throw new Error("Sign-in was cancelled."); }
+    res.end(page("Signed in. You can close this tab and return to Peridot."));
+    return token;
+  });
+  const port = await server.ready;
+  const link = `${WEB}/cli-login?${new URLSearchParams({ port: String(port), state })}`;
+  console.log(dim(`Opening your browser. If nothing happens, open this link:\n${link}\n`));
+  console.log(dim("Waiting for sign-in… (Ctrl+C to cancel)"));
+  openBrowser(link);
+  return server.result;
+}
+
+/** Google OAuth in the browser (implicit flow, loopback redirect), then exchange for a Peridot token. */
+async function loginWithGoogle(): Promise<string> {
+  const { googleClientId } = await api<{ googleClientId: string }>("/auth/config");
+  if (!googleClientId) throw new Error("Google sign-in is not configured on this server.");
+  const state = randomBytes(16).toString("hex");
+  const redirect = `http://127.0.0.1:${GOOGLE_PORT}/callback`;
+  const server = loopback(GOOGLE_PORT, (url, res) => {
+    if (url.pathname === "/callback") {
+      // The token comes back in the URL fragment, which the browser never sends: forward it to /token
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(page("Signing you in…", `<script>fetch("/token?"+location.hash.slice(1)).then(function(){document.getElementById("m").textContent="Signed in. You can close this tab and return to Peridot."})</script>`));
+      return;
+    }
+    if (url.pathname === "/token") {
+      res.writeHead(204).end();
+      if (url.searchParams.get("state") !== state) throw new Error("Google sign-in failed (state mismatch).");
+      const t = url.searchParams.get("access_token");
+      if (!t) throw new Error(url.searchParams.get("error") || "Google sign-in failed.");
+      return t;
+    }
+    res.writeHead(404).end();
+  });
+  await server.ready.catch(() => {});
+  const q = new URLSearchParams({ client_id: googleClientId, redirect_uri: redirect, response_type: "token", scope: "openid email profile", state, prompt: "select_account" });
+  const link = `https://accounts.google.com/o/oauth2/v2/auth?${q}`;
+  console.log(dim(`Opening your browser. If nothing happens, open this link:\n${link}\n`));
+  console.log(dim("Waiting for sign-in… (Ctrl+C to cancel)"));
+  openBrowser(link);
+  const accessToken = await server.result;
+  return (await api<{ token: string }>("/auth/google", { method: "POST", body: JSON.stringify({ accessToken }) })).token;
+}
+
+async function cmdLogin() {
+  console.log(bold("Sign in with"));
+  console.log(`  ${mint("1.")} Email ${dim("— on the Peridot website")}`);
+  console.log(`  ${mint("2.")} Google`);
+  const choice = (await ask(dim("\nChoose 1 or 2 (Enter to cancel): "))).toLowerCase();
+  if (!choice) return;
+
+  let token: string;
+  if (choice === "1" || choice === "email") token = await loginViaWebsite();
+  else if (choice === "2" || choice === "google") token = await loginWithGoogle();
+  else return console.log(red("Choose 1 or 2."));
+
+  const previous = config.token;
+  config.token = token;
+  try {
+    const me = await api<{ user: { email: string } }>("/auth/me");
+    await saveConfig();
+    console.log(`Signed in as ${bold(me.user.email)}.`);
+  } catch (e) {
+    config.token = previous;
+    throw e;
+  }
 }
 
 async function cmdLogout() {
@@ -244,7 +353,7 @@ function quit() {
 }
 
 async function banner() {
-  console.log(`\n${mint("◆")} ${bold("Peridot")} ${dim("v" + VERSION)}`);
+  console.log(`\n${mint(LOGO)} ${bold("Peridot")} ${dim("v" + VERSION)}`);
   let who = dim("not signed in · /login");
   if (authToken()) {
     who = await api<{ user: any }>("/auth/me").then((r) => dim(r.user.email), () => amber("session expired · /login"));
@@ -275,6 +384,7 @@ async function main() {
   let lastInterrupt = 0;
   rl.on("SIGINT", () => {
     if (abort) return abort.abort();
+    if (cancelLogin) return cancelLogin();
     if (rl.line) { (rl as any).line = ""; (rl as any).cursor = 0; process.stdout.write("\n"); return rl.prompt(); }
     if (Date.now() - lastInterrupt < 2000) return quit();
     lastInterrupt = Date.now();
