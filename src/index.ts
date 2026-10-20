@@ -3,6 +3,7 @@ import { createInterface, type Interface } from "node:readline";
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { startThinking } from "./thinking";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -138,7 +139,7 @@ function select(title: string, items: { label: string; hint?: string }[], initia
 
 // ── Chat ──
 /** Streams one answer to stdout. Returns the text received (also when interrupted). */
-async function streamAnswer(): Promise<string> {
+async function streamAnswer(thinking: { stop(): void }): Promise<string> {
   abort = new AbortController();
   let answer = "";
   try {
@@ -170,12 +171,17 @@ async function streamAnswer(): Promise<string> {
         if (event === "error") throw new Error(JSON.parse(data || "{}").error || "Streaming error");
         if (event === "message" && data) {
           const chunk = JSON.parse(data).chunk as string | undefined;
-          if (chunk) { answer += chunk; process.stdout.write(chunk); }
+          if (chunk) {
+            if (!answer) { thinking.stop(); process.stdout.write(`${mint(LOGO)} `); }
+            answer += chunk;
+            process.stdout.write(chunk);
+          }
         }
       }
     }
     process.stdout.write("\n");
   } catch (e) {
+    thinking.stop();
     if ((e as Error).name === "AbortError") {
       process.stdout.write(dim("\n[interrupted]\n"));
     } else {
@@ -183,6 +189,7 @@ async function streamAnswer(): Promise<string> {
       throw e;
     }
   } finally {
+    thinking.stop();
     abort = null;
   }
   return answer;
@@ -190,14 +197,17 @@ async function streamAnswer(): Promise<string> {
 
 async function send(text: string) {
   history.push({ role: "user", content: text });
-  process.stdout.write(`\n${mint(LOGO)} `);
+  process.stdout.write("\n");
+  const thinking = startThinking();
   try {
-    const answer = await streamAnswer();
+    const answer = await streamAnswer(thinking);
     if (answer) history.push({ role: "model", content: answer });
     else history.pop();
   } catch (e) {
     history.pop();
     console.log(red(`Error: ${(e as Error).message}`));
+  } finally {
+    thinking.stop();
   }
   console.log();
 }
@@ -485,6 +495,8 @@ async function main() {
     await send(line);
   }
 }
+
+process.on("exit", () => process.stdout.write("\x1b[?25h"));
 
 main().catch((e) => {
   console.error(red(`Error: ${(e as Error).message}`));
