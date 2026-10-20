@@ -21,7 +21,8 @@ const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 type Msg = { role: "user" | "model"; content: string };
-type Config = { token?: string; model?: string };
+type Mode = "auto" | "manual";
+type Config = { token?: string; model?: string; mode?: Mode };
 type Model = { id: string; name: string; badge?: string; desc: string; locked?: boolean };
 
 let config: Config = {};
@@ -326,14 +327,29 @@ function quit() {
   process.exit(0);
 }
 
-/** Account and model shown on the status line under the input. */
+// ── Status line under the input: approval mode on the left, model on the right ──
+let modelName = "";
+let signedIn = false;
+
+function paintStatus() {
+  const auto = config.mode === "auto";
+  const left = auto
+    ? `${bold(amber("▶▶ auto approval on"))} ${dim("(shift+tab to cycle)")}`
+    : `${bold(mint("▶ manual approval"))} ${dim("(shift+tab to cycle)")}`;
+  ui.setStatus(left, `${signedIn ? "" : "not signed in · "}${modelName || "default model"} · /help`);
+}
+
+async function cycleMode() {
+  config.mode = config.mode === "auto" ? "manual" : "auto";
+  paintStatus();
+  await saveConfig();
+}
+
 async function refreshStatus() {
-  let who = "not signed in · /login";
-  if (authToken()) {
-    who = await api<{ user: any }>("/auth/me").then((r) => r.user.email as string, () => "session expired · /login");
-  }
-  const model = (await loadModels().catch(() => [])).find((m) => m.id === (config.model || ""))?.name ?? config.model ?? "default model";
-  ui.setStatus(who, `${model} · /help`);
+  paintStatus();
+  signedIn = !!authToken() && (await api("/auth/me").then(() => true, () => false));
+  modelName = (await loadModels().catch(() => [])).find((m) => m.id === (config.model || ""))?.name ?? config.model ?? "";
+  paintStatus();
 }
 
 // ── Main ──
@@ -347,6 +363,7 @@ async function main() {
   let lastInterrupt = 0;
   ui.begin(`\n${mint(LOGO)} ${bold("Peridot")} ${dim("v" + VERSION)}\n${dim("Type a message, or / for commands.")}\n`, {
     complete: (text) => Object.keys(COMMANDS).map((c) => "/" + c).filter((c) => c.startsWith(text)),
+    onCycle: () => void cycleMode(),
     onInterrupt: (hasInput) => {
       if (abort) return abort.abort();
       if (cancelLogin) return cancelLogin();

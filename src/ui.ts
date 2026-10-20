@@ -11,6 +11,7 @@
 // so everything still ends up in the terminal's own scrollback.
 import { emitKeypressEvents } from "node:readline";
 import { dim, mint, bubbleLine } from "./style";
+import { fit, vis } from "./card";
 
 const w = (s: string) => process.stdout.write(s);
 const cols = () => Math.max(20, process.stdout.columns || 80);
@@ -36,6 +37,8 @@ type Handlers = {
   complete: (text: string) => string[];
   /** Ctrl+C. `hasInput` tells whether there is text in the input */
   onInterrupt: (hasInput: boolean) => void;
+  /** Shift+Tab */
+  onCycle: () => void;
 };
 let handlers: Handlers;
 
@@ -57,13 +60,13 @@ function view() {
 }
 const inputCol = () => 3 + cur - view().start;
 
+/** `status.left` may carry its own colors; the typed-command hint replaces it while you type. */
 function statusRow() {
   const W = cols();
-  const left = hint || status.left;
   const right = status.right;
-  let l = left.length + right.length + 2 > W ? left.slice(0, Math.max(0, W - right.length - 3)) + "…" : left;
-  const gap = Math.max(1, W - l.length - right.length - 1);
-  return dim(" " + l + " ".repeat(gap) + right);
+  const left = fit(hint ? dim(hint) : status.left, Math.max(0, W - right.length - 3));
+  const gap = Math.max(1, W - vis(left) - right.length - 1);
+  return " " + left + " ".repeat(gap) + dim(right);
 }
 
 /** The rest of the command you are typing, e.g. "age" for "/us" (shown in grey, Tab accepts it). */
@@ -222,7 +225,7 @@ function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean; me
 
   switch (key.name) {
     case "return": return void submit();
-    case "tab": return tab();
+    case "tab": return key.shift ? handlers.onCycle() : tab();
     case "backspace": return cur > 0 ? edit(buf.slice(0, cur - 1) + buf.slice(cur), cur - 1) : undefined;
     case "delete": return edit(buf.slice(0, cur) + buf.slice(cur + 1), cur);
     case "left": return void ((cur = word ? wordLeft() : Math.max(0, cur - 1)), redrawInput());
