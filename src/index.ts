@@ -48,7 +48,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, { ...init, headers: { ...headers(), ...(init?.headers ?? {}) } });
   const data = ((await res.json().catch(() => null)) ?? {}) as any;
   if (res.status === 401 && authToken()) throw new Error("Your session has expired. Use /login to sign in again.");
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status}) at ${API}${path}`);
   return data;
 }
 
@@ -71,7 +71,8 @@ function select(title: string, items: { label: string; hint?: string }[], initia
     const write = (s: string) => process.stdout.write(s);
 
     const draw = () => {
-      if (drawn) write(`\x1b[${drawn}A\x1b[0J`);
+      // \r first: the cursor must be in column 0 before moving up and clearing
+      if (drawn) write(`\r\x1b[${drawn}A\x1b[0J`);
       const lines = [bold(title), ...items.map((it, i) => {
         const text = `${it.label}${it.hint ? " " + dim(it.hint) : ""}`;
         return i === index ? `${mint("❯")} ${mint(it.label)}${it.hint ? " " + dim(it.hint) : ""}` : `  ${text}`;
@@ -80,16 +81,16 @@ function select(title: string, items: { label: string; hint?: string }[], initia
       drawn = lines.length;
     };
 
-    // readline keeps listening to the keys too; hide what it would echo and reset its line afterwards
-    const realWrite = (rl as any)._writeToOutput;
-    (rl as any)._writeToOutput = () => {};
+    // Take the keys away from readline while the menu is open, so it can't echo or move the cursor
+    const saved = process.stdin.listeners("keypress") as ((...a: any[]) => void)[];
+    saved.forEach((l) => process.stdin.off("keypress", l));
     write("\x1b[?25l");
     draw();
 
     const finish = (value: number | null) => {
       process.stdin.off("keypress", onKey);
       cancelLogin = null;
-      (rl as any)._writeToOutput = realWrite;
+      saved.forEach((l) => process.stdin.on("keypress", l));
       (rl as any).line = "";
       (rl as any).cursor = 0;
       write("\x1b[?25h");
