@@ -46,7 +46,7 @@ const headers = () => ({ "Content-Type": "application/json", ...(authToken() ? {
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, { ...init, headers: { ...headers(), ...(init?.headers ?? {}) } });
-  const data = (await res.json().catch(() => ({}))) as any;
+  const data = ((await res.json().catch(() => null)) ?? {}) as any;
   if (res.status === 401 && authToken()) throw new Error("Your session has expired. Use /login to sign in again.");
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
@@ -63,6 +63,51 @@ function ask(question: string, hidden = false): Promise<string> {
   });
 }
 
+/** Arrow-key menu: ↑/↓ to move, Enter to choose, Esc or Ctrl+C to cancel (resolves to null). */
+function select(title: string, items: { label: string; hint?: string }[], initial = 0): Promise<number | null> {
+  return new Promise((resolve) => {
+    let index = Math.min(Math.max(initial, 0), items.length - 1);
+    let drawn = 0;
+    const write = (s: string) => process.stdout.write(s);
+
+    const draw = () => {
+      if (drawn) write(`\x1b[${drawn}A\x1b[0J`);
+      const lines = [bold(title), ...items.map((it, i) => {
+        const text = `${it.label}${it.hint ? " " + dim(it.hint) : ""}`;
+        return i === index ? `${mint("❯")} ${mint(it.label)}${it.hint ? " " + dim(it.hint) : ""}` : `  ${text}`;
+      }), dim("↑/↓ to move · Enter to select · Esc to cancel")];
+      write(lines.join("\n") + "\n");
+      drawn = lines.length;
+    };
+
+    // readline keeps listening to the keys too; hide what it would echo and reset its line afterwards
+    const realWrite = (rl as any)._writeToOutput;
+    (rl as any)._writeToOutput = () => {};
+    write("\x1b[?25l");
+    draw();
+
+    const finish = (value: number | null) => {
+      process.stdin.off("keypress", onKey);
+      cancelLogin = null;
+      (rl as any)._writeToOutput = realWrite;
+      (rl as any).line = "";
+      (rl as any).cursor = 0;
+      write("\x1b[?25h");
+      resolve(value);
+    };
+
+    const onKey = (_: string, key: { name?: string; ctrl?: boolean }) => {
+      if (!key) return;
+      if (key.name === "up") { index = (index - 1 + items.length) % items.length; draw(); }
+      else if (key.name === "down") { index = (index + 1) % items.length; draw(); }
+      else if (key.name === "return") finish(index);
+      else if (key.name === "escape" || (key.ctrl && key.name === "c")) finish(null);
+    };
+    cancelLogin = () => finish(null);
+    process.stdin.on("keypress", onKey);
+  });
+}
+
 // ── Chat ──
 /** Streams one answer to stdout. Returns the text received (also when interrupted). */
 async function streamAnswer(): Promise<string> {
@@ -76,7 +121,7 @@ async function streamAnswer(): Promise<string> {
       signal: abort.signal,
     });
     if (!res.ok || !res.body) {
-      const err = (await res.json().catch(() => ({}))) as any;
+      const err = ((await res.json().catch(() => null)) ?? {}) as any;
       if (res.status === 401 && authToken()) throw new Error("Your session has expired. Use /login to sign in again.");
       throw new Error(err.error || `Request failed (${res.status})`);
     }
@@ -153,15 +198,16 @@ async function cmdModel(arg: string) {
 
   let choice = arg ? find(arg) : undefined;
   if (!arg) {
-    console.log(bold("Models"));
-    models.forEach((m, i) => {
-      const active = m.id === current;
-      const line = `${String(i + 1).padStart(2)}. ${m.name}${m.badge ? ` ${dim(`[${m.badge}]`)}` : ""} ${dim("— " + m.desc)}${m.locked ? " " + amber("(upgrade to use)") : ""}`;
-      console.log(`${active ? mint("●") : " "} ${line}`);
-    });
-    const pick = await ask(dim("\nNumber or name (Enter to keep the current model): "));
-    if (!pick) return;
-    choice = find(pick);
+    const picked = await select(
+      "Choose a model",
+      models.map((m) => ({
+        label: `${m.id === current ? "● " : ""}${m.name}${m.badge ? ` [${m.badge}]` : ""}`,
+        hint: `— ${m.desc}${m.locked ? " (upgrade to use)" : ""}`,
+      })),
+      Math.max(0, models.findIndex((m) => m.id === current))
+    );
+    if (picked === null) return;
+    choice = models[picked];
   }
   if (!choice) return console.log(red(`No model matches "${arg || ""}". Use /model to see the list.`));
   if (choice.locked) return console.log(amber(`${choice.name} is not included in your plan. See https://peridot.ai/#plans`));
@@ -291,16 +337,15 @@ async function loginWithGoogle(): Promise<string> {
 }
 
 async function cmdLogin() {
-  console.log(bold("Sign in with"));
-  console.log(`  ${mint("1.")} Email ${dim("— on the Peridot website")}`);
-  console.log(`  ${mint("2.")} Google`);
-  const choice = (await ask(dim("\nChoose 1 or 2 (Enter to cancel): "))).toLowerCase();
-  if (!choice) return;
+  const method = await select("Sign in with", [
+    { label: "Email", hint: "— on the Peridot website" },
+    { label: "Google" },
+  ]);
+  if (method === null) return;
 
   let token: string;
-  if (choice === "1" || choice === "email") token = await loginViaWebsite();
-  else if (choice === "2" || choice === "google") token = await loginWithGoogle();
-  else return console.log(red("Choose 1 or 2."));
+  if (method === 0) token = await loginViaWebsite();
+  else token = await loginWithGoogle();
 
   const previous = config.token;
   config.token = token;
