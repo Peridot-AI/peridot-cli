@@ -28,7 +28,7 @@ Type a message, or / for commands.
 | `/help` | List commands |
 | `/exit` | Quit |
 
-`Ctrl+C` stops a response, `Tab` completes commands, `↑`/`↓` recall earlier messages. The token and the selected model are stored in `~/.config/peridot/config.json` (mode 0600).
+`Ctrl+C` stops a response, Type `/` and the rest of the command appears in grey: `Tab` (or `→`) accepts it. `↑`/`↓` recall earlier messages. The token and the selected model are stored in `~/.config/peridot/config.json` (mode 0600).
 
 Environment: `PERIDOT_TOKEN` (use instead of the stored token), `PERIDOT_API_URL` (default `https://peridot.ai/api`), `PERIDOT_WEB_URL` (default `https://peridot.ai`).
 

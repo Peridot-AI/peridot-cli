@@ -66,9 +66,18 @@ function statusRow() {
   return dim(" " + l + " ".repeat(gap) + right);
 }
 
+/** The rest of the command you are typing, e.g. "age" for "/us" (shown in grey, Tab accepts it). */
+function suggestion() {
+  if (!buf.startsWith("/") || buf.includes(" ") || cur !== buf.length) return "";
+  const hit = handlers.complete(buf).find((c) => c.length > buf.length);
+  return hit ? hit.slice(buf.length) : "";
+}
+
 function inputRow() {
   const { text } = view();
-  return `${mint("›")} ${text || dim('Try "/help" or just ask something')}`;
+  if (!text) return `${mint("›")} ${dim('Try "/help" or just ask something')}`;
+  const room = cols() - 4 - text.length;
+  return `${mint("›")} ${text}${room > 0 ? dim(suggestion().slice(0, room)) : ""}`;
 }
 
 /** Draws the input area below the output row. The cursor must be on the output row. */
@@ -182,14 +191,16 @@ function recall(delta: number) {
   updateHint();
 }
 
+/** Accepts the grey suggestion. Returns false when there is none. */
+function acceptSuggestion() {
+  const rest = suggestion();
+  if (!rest) return false;
+  edit(buf + rest + " ", buf.length + rest.length + 1);
+  return true;
+}
+
 function tab() {
-  if (!buf.startsWith("/") || buf.includes(" ")) return;
-  const hits = handlers.complete(buf);
-  if (!hits.length) return;
-  if (hits.length === 1) return edit(hits[0] + " ", hits[0].length + 1);
-  let prefix = hits[0];
-  for (const h of hits) while (!h.startsWith(prefix)) prefix = prefix.slice(0, -1);
-  if (prefix.length > buf.length) edit(prefix, prefix.length);
+  acceptSuggestion();
 }
 
 async function submit() {
@@ -215,7 +226,9 @@ function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean; me
     case "backspace": return cur > 0 ? edit(buf.slice(0, cur - 1) + buf.slice(cur), cur - 1) : undefined;
     case "delete": return edit(buf.slice(0, cur) + buf.slice(cur + 1), cur);
     case "left": return void ((cur = word ? wordLeft() : Math.max(0, cur - 1)), redrawInput());
-    case "right": return void ((cur = word ? wordRight() : Math.min(buf.length, cur + 1)), redrawInput());
+    case "right":
+      if (cur === buf.length && acceptSuggestion()) return;
+      return void ((cur = word ? wordRight() : Math.min(buf.length, cur + 1)), redrawInput());
     case "home": return void ((cur = 0), redrawInput());
     case "end": return void ((cur = buf.length), redrawInput());
     case "up": return recall(-1);
