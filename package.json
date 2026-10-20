@@ -1,10 +1,13 @@
 {
   "name": "peridot-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Peridot AI in your terminal",
   "type": "module",
-  "bin": { "peridot": "src/index.ts" },
+  "bin": {
+    "peridot": "src/index.ts"
+  },
   "scripts": {
+    "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "build": "bun build --compile src/index.ts --outfile dist/peridot",
     "build:linux": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/peridot-linux",
