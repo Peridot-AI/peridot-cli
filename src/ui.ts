@@ -24,6 +24,7 @@ let cur = 0;
 let busy = false;
 let started = false;
 let hint = "";
+let chromeW = 0; // terminal width the input area was last drawn for
 const lines: string[] = [];
 let histIdx = -1;
 let draft = "";
@@ -72,6 +73,7 @@ function inputRow() {
 
 /** Draws the input area below the output row. The cursor must be on the output row. */
 function writeChrome() {
+  chromeW = cols();
   const rule = dim("─".repeat(cols()));
   w(`\r\n${rule}\r\n\x1b[2K${inputRow()}\r\n${rule}\r\n\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
 }
@@ -235,8 +237,12 @@ function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean; me
 
 function relayout() {
   if (!started) return;
-  toOutput();
-  w("\x1b[0J");
+  const W = cols();
+  // The terminal re-wrapped what was on screen: the old full-width rule now takes several rows
+  const ruleRows = Math.max(1, Math.ceil(chromeW / W));
+  outCol = Math.min(outCol, W - 1);
+  w(`\x1b[${ruleRows + 1}A\x1b[${outCol + 1}G\x1b[0J`); // erase the old input area
+  w(`\x1b[${Math.max(1, rowsN() - 4)};${outCol + 1}H`); // output row, right above the bottom of the screen
   writeChrome();
 }
 
