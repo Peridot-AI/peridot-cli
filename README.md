@@ -5,7 +5,7 @@
 The conversation scrolls above; the input sits at the bottom between two rules, with your account and the current model on the status line. Messages you send are shown on a slightly lighter background.
 
 ```
-∷ Peridot v0.3.0
+∷ Peridot v0.4.0
 Type a message, or / for commands.
 
  › hello
@@ -29,6 +29,17 @@ Type a message, or / for commands.
 | `/exit` | Quit |
 
 `Ctrl+C` stops a response, Type `/` and the rest of the command appears in grey: `Tab` (or `→`) accepts it. `↑`/`↓` recall earlier messages. The token and the selected model are stored in `~/.config/peridot/config.json` (mode 0600).
+
+## Working in your project
+
+The folder you start `peridot` in is the **workspace**. When you are signed in, Peridot can list, read and search files there, create and edit them, and run shell commands, all confined to that folder (paths outside it, also through symlinks, are refused).
+
+- **Manual approval** (default): before it writes a file, edits one or runs a command, a window shows exactly what it is about to do and asks. "Yes, and don't ask again" switches to auto approval.
+- **Auto approval**: it does everything without asking. `Shift+Tab` cycles between the two modes (shown under the input).
+- `!command` runs a shell command in the folder yourself, e.g. `!git status`.
+- `Ctrl+C` stops the response and any command that is still running.
+
+Without signing in, Peridot is chat only.
 
 Environment: `PERIDOT_TOKEN` (use instead of the stored token), `PERIDOT_API_URL` (default `https://peridot.ai/api`), `PERIDOT_WEB_URL` (default `https://peridot.ai`).
 

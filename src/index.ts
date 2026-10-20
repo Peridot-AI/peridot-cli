@@ -5,14 +5,16 @@ import { randomBytes } from "node:crypto";
 import { startThinking } from "./thinking";
 import { mint, dim, bold, red, amber } from "./style";
 import * as ui from "./ui";
-import { select, showCard } from "./card";
+import { select, showCard, cut } from "./card";
 import { usageLines, type HeatView } from "./usage";
+import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHooks } from "./agent";
+import { root, runCommand, stopCommands } from "./tools";
 const { out, print } = ui;
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const API = (process.env.PERIDOT_API_URL || "https://peridot.ai/api").replace(/\/+$/, "");
 const WEB = (process.env.PERIDOT_WEB_URL || "https://peridot.ai").replace(/\/+$/, "");
 // Registered as a redirect URI of the Google OAuth client (same one the desktop app uses)
@@ -27,6 +29,8 @@ type Model = { id: string; name: string; badge?: string; desc: string; locked?: 
 
 let config: Config = {};
 let history: Msg[] = [];
+let agentMessages: ApiMessage[] = [];
+let tipShown = false;
 let abort: AbortController | null = null;
 let cancelLogin: (() => void) | null = null;
 /** Four dots, like the Peridot logo */
@@ -115,7 +119,7 @@ async function streamAnswer(thinking: { stop(): void }): Promise<string> {
   return answer;
 }
 
-async function send(text: string) {
+async function sendChat(text: string) {
   history.push({ role: "user", content: text });
   out(`\n${ui.userBubble(text)}\n\n`);
   const thinking = startThinking(ui.setLine, () => ui.setLine(""));
@@ -128,6 +132,150 @@ async function send(text: string) {
     print(red(`Error: ${(e as Error).message}`));
   } finally {
     thinking.stop();
+  }
+}
+
+// ── Agent: reads and edits files and runs commands in the folder Peridot was opened in ──
+const TOOL_LABEL: Record<string, string> = {
+  list_files: "List", read_file: "Read", search: "Search", write_file: "Write", edit_file: "Edit", run_command: "Run",
+};
+
+function toolArg(call: ToolCall) {
+  const i = call.input;
+  if (call.name === "search") return `${i.pattern}${i.path && i.path !== "." ? ` in ${i.path}` : ""}`;
+  if (call.name === "run_command") return String(i.command ?? "");
+  return String(i.path ?? ".");
+}
+
+/** What an action is about to do, shown in the approval window. */
+function approvalDetails(call: ToolCall): string[] {
+  const i = call.input;
+  const lines = (t: unknown, n: number) => {
+    const all = String(t ?? "").split("\n");
+    return [...all.slice(0, n), ...(all.length > n ? [dim(`… ${all.length - n} more lines`)] : [])];
+  };
+  if (call.name === "run_command") return [bold("Run in this folder:"), ...lines(i.command, 8).map((l) => `$ ${l}`)];
+  if (call.name === "edit_file") {
+    return [
+      bold(String(i.path)) + dim(i.replace_all ? " (all matches)" : ""),
+      ...lines(i.old_string, 7).map((l) => red("- " + l)),
+      ...lines(i.new_string, 7).map((l) => mint("+ " + l)),
+    ];
+  }
+  return [bold(String(i.path)) + dim(` (${String(i.content ?? "").split("\n").length} lines)`), ...lines(i.content, 8).map((l) => dim(l))];
+}
+
+async function approve(call: ToolCall): Promise<boolean> {
+  if (config.mode === "auto") return true;
+  const title = call.name === "run_command" ? "Run this command?" : call.name === "edit_file" ? "Apply this edit?" : "Write this file?";
+  const choice = await select(
+    title,
+    [{ label: "Yes" }, { label: "Yes, and don't ask again", hint: "(switches to auto approval)" }, { label: "No" }],
+    0,
+    approvalDetails(call)
+  );
+  if (choice === 1) {
+    config.mode = "auto";
+    paintStatus();
+    await saveConfig();
+  }
+  return choice === 0 || choice === 1;
+}
+
+function showResult(call: ToolCall, r: ToolResult) {
+  if (r.denied) return print(amber("  ⎿ Denied"));
+  const out = r.output.trim();
+  if (!r.ok) return print(red("  ⎿ " + cut(out.split("\n")[0], 160)));
+  if (call.name === "run_command") {
+    const lines = out.split("\n");
+    const exit = /^\[exit code (-?\d+|null)\]$/.exec(lines[lines.length - 1] ?? "");
+    const body = exit ? lines.slice(0, -1) : lines;
+    const shown = body.slice(0, 8).map((l, i) => dim((i === 0 ? "  ⎿ " : "    ") + cut(l, 160)));
+    if (body.length > 8) shown.push(dim(`    … ${body.length - 8} more lines`));
+    if (exit && exit[1] !== "0") shown.push(red(`    exit code ${exit[1]}`));
+    return print(shown.join("\n") || dim("  ⎿ (no output)"));
+  }
+  if (call.name === "write_file" || call.name === "edit_file") return print(dim("  ⎿ " + out));
+  const n = out.split("\n").length;
+  print(dim(`  ⎿ ${out === "No matches." || out === "(empty)" ? out : `${n} line${n === 1 ? "" : "s"}`}`));
+}
+
+async function sendAgent(text: string) {
+  // After an interrupted step the history ends with tool results: the new text joins that message
+  const last = agentMessages[agentMessages.length - 1];
+  const before = agentMessages.length;
+  if (last && last.role === "user" && Array.isArray(last.content)) last.content.push({ type: "text", text });
+  else agentMessages.push({ role: "user", content: text });
+
+  abort = new AbortController();
+  let thinking: { stop(): void } = { stop() {} };
+  let started = false;
+  let pending = "";
+  let lastFlush = 0;
+  const flush = (force = false) => {
+    if (pending && (force || Date.now() - lastFlush > 40)) { out(pending); pending = ""; lastFlush = Date.now(); }
+  };
+
+  const hooks: AgentHooks = {
+    onModelStart: () => { thinking = startThinking(ui.setLine, () => ui.setLine("")); },
+    onText: (chunk) => {
+      if (!started) { thinking.stop(); started = true; pending = `${mint(LOGO)} `; }
+      pending += chunk;
+      flush();
+    },
+    onTurnEnd: () => {
+      thinking.stop();
+      flush(true);
+      if (started) out("\n");
+      started = false;
+    },
+    approve,
+    onToolStart: (call) => print(`${mint("●")} ${bold(TOOL_LABEL[call.name] ?? call.name)}${dim("(" + cut(toolArg(call), 100) + ")")}`),
+    onToolEnd: showResult,
+  };
+
+  try {
+    await runAgent(agentMessages, {
+      url: `${API}/chat/agent`,
+      headers,
+      model: config.model || "fast",
+      effort: "Medium",
+      workspace: root.split(/[\\/]/).pop() || root,
+    }, hooks, abort.signal);
+  } catch (e) {
+    thinking.stop();
+    flush(true);
+    if ((e as Error).name === "AbortError") print(dim("[interrupted]"));
+    else {
+      const msg = (e as Error).message;
+      print(red(`Error: ${/401|Sign in/.test(msg) ? "Your session has expired or you are not signed in. Use /login." : msg}`));
+    }
+    // Nothing was done yet: forget the message so the next one starts clean
+    if (agentMessages.length === before + 1 && agentMessages[before]?.role === "user" && agentMessages[before].content === text) agentMessages.pop();
+  } finally {
+    thinking.stop();
+    abort = null;
+    stopCommands();
+  }
+}
+
+async function send(text: string) {
+  if (authToken()) return sendAgent(text);
+  if (!tipShown) {
+    tipShown = true;
+    print(dim("Tip: sign in with /login to let Peridot read and edit files and run commands in this folder.\n"));
+  }
+  return sendChat(text);
+}
+
+/** `!command`: runs a shell command in the folder, without asking. */
+async function shell(command: string) {
+  if (!command.trim()) return print(dim("Type a command after !, e.g. !ls"));
+  abort = new AbortController();
+  try {
+    print((await runCommand({ command })).replace(/\n\[exit code (-?\d+|null)\]$/, (_m, c) => (c === "0" ? "" : red(`\n[exit code ${c}]`))));
+  } finally {
+    abort = null;
   }
 }
 
@@ -309,7 +457,7 @@ const COMMANDS: Record<string, Command> = {
   login: { desc: "Sign in to your Peridot account", run: cmdLogin },
   logout: { desc: "Sign out", run: cmdLogout },
   whoami: { desc: "Show the signed-in account", run: cmdWhoami },
-  clear: { desc: "Start a new conversation", run: () => { history = []; print(dim("Conversation cleared.")); } },
+  clear: { desc: "Start a new conversation", run: () => { history = []; agentMessages = []; print(dim("Conversation cleared.")); } },
   exit: { desc: "Quit Peridot", run: () => quit() },
 };
 const ALIASES: Record<string, string> = { quit: "exit", q: "exit", new: "clear", "?": "help" };
@@ -319,7 +467,8 @@ function printHelp() {
   for (const [name, c] of Object.entries(COMMANDS)) {
     print(`  ${mint(("/" + name + (c.usage ? " " + c.usage : "")).padEnd(24))}${c.desc}`);
   }
-  print(dim("\nTab completes commands · Ctrl+C stops a response."));
+  print(`  ${mint("!command".padEnd(24))}Run a shell command in this folder`);
+  print(dim("\nWhen you are signed in, Peridot can read and edit files here and run commands (it asks first in manual mode).\nTab completes commands · Ctrl+C stops a response."));
 }
 
 function quit() {
@@ -361,11 +510,18 @@ async function main() {
   config = JSON.parse(await readFile(CONFIG_FILE, "utf8").catch(() => "{}"));
 
   let lastInterrupt = 0;
-  ui.begin(`\n${mint(LOGO)} ${bold("Peridot")} ${dim("v" + VERSION)}\n${dim("Type a message, or / for commands.")}\n`, {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const where = home && root.startsWith(home) ? "~" + root.slice(home.length) : root;
+  const broad = root === home || root === "/" || /^[A-Za-z]:\\?$/.test(root);
+  ui.begin(
+    `\n${mint(LOGO)} ${bold("Peridot")} ${dim("v" + VERSION)}\n${dim("Working in " + where)}\n` +
+      (broad ? `${amber("This is a very broad folder. Open Peridot in your project folder to keep it focused.")}\n` : "") +
+      `${dim("Type a message, / for commands, ! for a shell command.")}\n`,
+    {
     complete: (text) => Object.keys(COMMANDS).map((c) => "/" + c).filter((c) => c.startsWith(text)),
     onCycle: () => void cycleMode(),
     onInterrupt: (hasInput) => {
-      if (abort) return abort.abort();
+      if (abort) { abort.abort(); stopCommands(); return; }
       if (cancelLogin) return cancelLogin();
       if (hasInput) return ui.clearInput();
       if (Date.now() - lastInterrupt < 2000) return quit();
@@ -375,7 +531,10 @@ async function main() {
     onSubmit: async (line) => {
       ui.setBusy(true);
       try {
-        if (line.startsWith("/")) {
+        if (line.startsWith("!")) {
+          out(`\n${ui.userBubble(line)}\n\n`);
+          try { await shell(line.slice(1)); } catch (e) { print(red(`Error: ${(e as Error).message}`)); }
+        } else if (line.startsWith("/")) {
           out(`\n${ui.userBubble(line)}\n\n`);
           const [raw, ...rest] = line.slice(1).split(/\s+/);
           const name = ALIASES[raw.toLowerCase()] ?? raw.toLowerCase();

@@ -88,7 +88,8 @@ export function popup<T>(
 }
 
 /** Arrow-key menu. Resolves to the chosen index, or null when cancelled. */
-export function select(title: string, items: { label: string; hint?: string }[], initial = 0): Promise<number | null> {
+/** `details` is shown above the choices (e.g. what an approval is about). */
+export function select(title: string, items: { label: string; hint?: string }[], initial = 0, details: string[] = []): Promise<number | null> {
   let index = Math.min(Math.max(initial, 0), items.length - 1);
   return popup<number | null>(
     ({ width, text }) => {
@@ -98,7 +99,7 @@ export function select(title: string, items: { label: string; hint?: string }[],
         const hint = it.hint && room > 4 ? " " + dim(cut(it.hint, room)) : "";
         return i === index ? `\x1b[38;2;111;211;183m❯ ${label}\x1b[0m${hint}` : `  ${label}${hint}`;
       });
-      return renderBox(title, body, "↑/↓ move · Enter select · Esc cancel", width);
+      return renderBox(title, details.length ? [...details, "", ...body] : body, "↑/↓ move · Enter select · Esc cancel", width);
     },
     (key, done, redraw) => {
       if (key.name === "up") { index = (index - 1 + items.length) % items.length; redraw(); }
