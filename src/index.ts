@@ -6,7 +6,7 @@ import { startThinking } from "./thinking";
 import { mint, dim, bold, red, amber } from "./style";
 import * as ui from "./ui";
 import { select, showCard } from "./card";
-import { usageLines } from "./usage";
+import { usageLines, type HeatView } from "./usage";
 const { out, print } = ui;
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -168,7 +168,12 @@ async function cmdModel(arg: string) {
 async function cmdUsage() {
   if (!authToken()) return print("Sign in with /login to see your usage.");
   const data = await api<{ user: any; stats: any; limits?: any }>("/auth/me");
-  await showCard("Usage", (text) => usageLines(data, text));
+  let view: HeatView = "large";
+  await showCard("Usage", (text) => usageLines(data, text, view), (key) => {
+    if (key.name !== "tab") return false;
+    view = view === "large" ? "year" : "large";
+    return true;
+  });
 }
 
 function openBrowser(url: string) {

@@ -14,12 +14,16 @@ const bar = (pct: number, width: number) => {
 // Same shades as the heatmap on the website: from an empty day to the most active one
 const SHADES = [rgb(52, 52, 49), rgb(22, 57, 47), rgb(42, 107, 88), rgb(75, 168, 141), rgb(111, 211, 183)];
 const PLAIN = ["·", "░", "▒", "▓", "█"];
-const cell = (level: number) => (color ? SHADES[level]("■") : PLAIN[level]);
+// "Large" cells are two columns wide (a terminal cell is about twice as tall as wide, so they look
+// square) with a one column gap. "Year" cells are single small squares so all 53 weeks fit.
+export type HeatView = "large" | "year";
+const cell = (level: number, view: HeatView) =>
+  view === "large" ? (color ? SHADES[level]("▇▇") : PLAIN[level].repeat(2)) : color ? SHADES[level]("■") : PLAIN[level];
 
 const DAY = 86400000;
 
 /** GitHub-style grid: one column per week (Sunday first), the last column ends today. */
-function heatmap(daily: Daily[], maxWeeks: number, labelWidth: number) {
+function heatmap(daily: Daily[], space: number, labelWidth: number, view: HeatView) {
   const byDate = new Map(daily.map((d) => [d.date, d]));
   const now = new Date();
   const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
@@ -38,32 +42,40 @@ function heatmap(daily: Daily[], maxWeeks: number, labelWidth: number) {
     weeks[weeks.length - 1].push({ tokens, future: t > end });
   }
 
-  // Narrow terminals show the most recent weeks only
-  const keep = Math.min(weeksAll, Math.max(8, maxWeeks));
+  // Large cells need three columns per week, so narrow terminals show the most recent weeks only
+  const pitch = view === "large" ? 3 : 1;
+  const keep = Math.min(weeksAll, Math.max(8, Math.floor(space / pitch)));
   const from = weeks.length - keep;
   const shown = weeks.slice(from);
   const level = (n: number) => (n <= 0 || !max ? 0 : Math.min(4, Math.ceil((n / max) * 4)));
+  const firstShown = starts[from];
+  total = 0; input = 0; output = 0;
+  for (const d of daily) {
+    const t = Date.parse(d.date + "T00:00:00Z");
+    if (t >= firstShown && t <= end) { total += d.totalTokens; input += d.inputTokens; output += d.outputTokens; }
+  }
 
   // Month names above the week where a month begins, skipping ones that would touch
-  const monthRow = Array(keep).fill(" ");
+  const monthRow = Array(keep * pitch).fill(" ");
   let lastLabel = -10;
   starts.slice(from).forEach((t, col) => {
     const d = new Date(t);
-    if (d.getUTCDate() > 7 || col - lastLabel < 4 || col + 3 > keep) return;
-    d.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }).split("").forEach((c, i) => (monthRow[col + i] = c));
-    lastLabel = col;
+    const x = col * pitch;
+    if (d.getUTCDate() > 7 || x - lastLabel < 4 || x + 3 > monthRow.length) return;
+    d.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }).split("").forEach((c, i) => (monthRow[x + i] = c));
+    lastLabel = x;
   });
 
   const pad = " ".repeat(labelWidth);
   const names: Record<number, string> = { 1: "Mon", 3: "Wed", 5: "Fri" };
   const rows = [dim(pad + monthRow.join(""))];
   for (let d = 0; d < 7; d++) {
-    rows.push(dim((names[d] ?? "").padEnd(labelWidth)) + shown.map((wk) => (wk[d].future ? " " : cell(level(wk[d].tokens)))).join(""));
+    rows.push(dim((names[d] ?? "").padEnd(labelWidth)) + shown.map((wk) => (wk[d].future ? " ".repeat(pitch) : cell(level(wk[d].tokens), view) + (view === "large" ? " " : ""))).join(""));
   }
-  return { rows, total, input, output, width: labelWidth + keep };
+  return { rows, total, input, output, weeks: keep, all: keep === weeksAll };
 }
 
-export function usageLines(data: { user: any; stats: any; limits?: any }, text: number): string[] {
+export function usageLines(data: { user: any; stats: any; limits?: any }, text: number, view: HeatView): string[] {
   const { user, stats, limits } = data;
   const lines: string[] = [];
   const barWidth = Math.max(10, Math.min(24, text - 46));
@@ -84,10 +96,11 @@ export function usageLines(data: { user: any; stats: any; limits?: any }, text: 
     );
   }
 
-  const map = heatmap(stats.daily ?? [], text - 4, 4);
-  lines.push(`${bold(fmt(map.total))} tokens in the last year ${dim(`· input ${fmt(map.input)} · output ${fmt(map.output)}`)}`);
+  const map = heatmap(stats.daily ?? [], text - 4, 4, view);
+  const period = map.all ? "in the last year" : `in the last ${map.weeks} weeks`;
+  lines.push(`${bold(fmt(map.total))} tokens ${period} ${dim(`· input ${fmt(map.input)} · output ${fmt(map.output)}`)}`);
   lines.push(...map.rows);
-  lines.push(`${" ".repeat(4)}${dim("Less")} ${[0, 1, 2, 3, 4].map(cell).join(" ")} ${dim("More")}`, "");
+  lines.push(`${" ".repeat(4)}${dim("Less")} ${[0, 1, 2, 3, 4].map((l) => cell(l, view)).join(" ")} ${dim("More")}${dim(view === "large" ? "     Tab: whole year" : "     Tab: larger cells")}`, "");
 
   lines.push(
     `Total        ${bold(fmt(stats.totalTokens))} tokens ${dim(`· ${requests(stats.requestCount)}`)}`,

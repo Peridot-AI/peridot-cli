@@ -22,9 +22,9 @@ export function fit(s: string, n: number): string {
 export type Key = { name?: string; ctrl?: boolean; meta?: boolean };
 
 /** Width of the box and of the text inside it. */
-export function boxSize() {
+export function boxSize(wide = false) {
   const cols = process.stdout.columns || 80;
-  const width = Math.max(24, Math.min(80, cols - 4));
+  const width = wide ? Math.max(24, cols - 2) : Math.max(24, Math.min(80, cols - 4));
   return { width, text: width - 4 };
 }
 
@@ -50,13 +50,14 @@ export function renderBox(title: string, body: string[], footer: string, width: 
 export function popup<T>(
   render: (size: { width: number; text: number; maxRows: number }) => string[],
   onKey: (key: Key, done: (value: T) => void, redraw: () => void) => void,
-  cancelValue: T
+  cancelValue: T,
+  wide = false
 ): Promise<T> {
   return new Promise((resolve) => {
     const draw = () => {
       const cols = process.stdout.columns || 80;
       const rows = process.stdout.rows || 24;
-      const { width, text } = boxSize();
+      const { width, text } = boxSize(wide);
       const box = render({ width, text, maxRows: Math.max(3, rows - 6) });
       const top = Math.max(1, Math.floor((rows - box.length) / 2) + 1);
       const left = Math.max(1, Math.floor((cols - width) / 2) + 1);
@@ -109,7 +110,7 @@ export function select(title: string, items: { label: string; hint?: string }[],
 }
 
 /** A read-only window with scrolling for content taller than the screen. */
-export function showCard(title: string, lines: (text: number) => string[]): Promise<void> {
+export function showCard(title: string, lines: (text: number) => string[], onKey?: (key: Key) => boolean): Promise<void> {
   let offset = 0;
   let total = 0;
   let page = 1;
@@ -132,7 +133,9 @@ export function showCard(title: string, lines: (text: number) => string[]): Prom
       else if (key.name === "home") to(0);
       else if (key.name === "end") to(total);
       else if (key.name === "return" || key.name === "q") done();
+      else if (onKey?.(key)) redraw(); // the caller changed what `lines` returns
     },
-    undefined
+    undefined,
+    true
   );
 }
