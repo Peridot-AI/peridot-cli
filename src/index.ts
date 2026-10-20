@@ -63,46 +63,63 @@ function ask(question: string, hidden = false): Promise<string> {
   });
 }
 
-/** Arrow-key menu: ↑/↓ to move, Enter to choose, Esc or Ctrl+C to cancel (resolves to null). */
+/**
+ * Arrow-key menu shown as its own window: a box on the terminal's alternate screen. It disappears
+ * when closed and the conversation underneath is back exactly as it was.
+ * ↑/↓ to move, Enter to choose, Esc or Ctrl+C to cancel (resolves to null).
+ */
 function select(title: string, items: { label: string; hint?: string }[], initial = 0): Promise<number | null> {
   return new Promise((resolve) => {
     let index = Math.min(Math.max(initial, 0), items.length - 1);
-    let drawn = 0;
     const write = (s: string) => process.stdout.write(s);
+    const cut = (t: string, n: number) => (t.length > n ? t.slice(0, Math.max(0, n - 1)) + "…" : t);
 
     const draw = () => {
-      // \r first: the cursor must be in column 0 before moving up and clearing
-      if (drawn) write(`\r\x1b[${drawn}A\x1b[0J`);
-      // Every line must fit on one screen row, otherwise wrapped rows break the cursor-up redraw
-      const max = Math.max(10, (process.stdout.columns || 80) - 3);
-      const cut = (t: string, n: number) => (t.length > n ? t.slice(0, Math.max(0, n - 1)) + "…" : t);
-      const lines = [
-        bold(cut(title, max)),
-        ...items.map((it, i) => {
-          const label = cut(it.label, max);
-          const room = max - label.length - 1;
-          const hint = it.hint && room > 4 ? " " + dim(cut(it.hint, room)) : "";
-          return i === index ? `${mint("❯")} ${mint(label)}${hint}` : `  ${label}${hint}`;
-        }),
-        dim(cut("↑/↓ to move · Enter to select · Esc to cancel", max)),
+      const cols = process.stdout.columns || 80;
+      const rows = process.stdout.rows || 24;
+      const width = Math.max(24, Math.min(76, cols - 4));
+      const inner = width - 2;
+      const room = inner - 4; // one space and the marker on the left, one space on the right
+
+      const row = (plain: string, styled: string) => dim("│") + " " + styled + " ".repeat(Math.max(0, inner - 2 - plain.length)) + " " + dim("│");
+      const head = cut(title, inner - 4);
+      const body = items.map((it, i) => {
+        const label = cut(it.label, room - 2);
+        const left = room - 2 - label.length - 1;
+        const hint = it.hint && left > 4 ? cut(it.hint, left) : "";
+        const plain = `  ${label}${hint ? " " + hint : ""}`;
+        const styled = i === index ? `${mint("❯")} ${mint(label)}${hint ? " " + dim(hint) : ""}` : plain.replace(hint, hint ? dim(hint) : "");
+        return row(plain, styled);
+      });
+      const foot = cut("↑/↓ move · Enter select · Esc cancel", inner - 2);
+      const box = [
+        dim("╭─ ") + bold(head) + " " + dim("─".repeat(Math.max(0, inner - head.length - 3)) + "╮"),
+        row("", ""),
+        ...body,
+        row("", ""),
+        row(foot, dim(foot)),
+        dim("╰" + "─".repeat(inner) + "╯"),
       ];
-      write(lines.join("\n") + "\n");
-      drawn = lines.length;
+
+      const top = Math.max(1, Math.floor((rows - box.length) / 2) + 1);
+      const left = Math.max(1, Math.floor((cols - width) / 2) + 1);
+      write("\x1b[2J" + box.map((line, i) => `\x1b[${top + i};${left}H${line}`).join(""));
     };
 
     // Take the keys away from readline while the menu is open, so it can't echo or move the cursor
     const saved = process.stdin.listeners("keypress") as ((...a: any[]) => void)[];
     saved.forEach((l) => process.stdin.off("keypress", l));
-    write("\x1b[?25l");
+    write("\x1b[?1049h\x1b[?25l"); // alternate screen, hide the cursor
     draw();
 
     const finish = (value: number | null) => {
       process.stdin.off("keypress", onKey);
+      process.stdout.off("resize", draw);
       cancelLogin = null;
       saved.forEach((l) => process.stdin.on("keypress", l));
       (rl as any).line = "";
       (rl as any).cursor = 0;
-      write("\x1b[?25h");
+      write("\x1b[?25h\x1b[?1049l"); // back to the conversation
       resolve(value);
     };
 
@@ -115,6 +132,7 @@ function select(title: string, items: { label: string; hint?: string }[], initia
     };
     cancelLogin = () => finish(null);
     process.stdin.on("keypress", onKey);
+    process.stdout.on("resize", draw);
   });
 }
 
