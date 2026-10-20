@@ -73,10 +73,19 @@ function select(title: string, items: { label: string; hint?: string }[], initia
     const draw = () => {
       // \r first: the cursor must be in column 0 before moving up and clearing
       if (drawn) write(`\r\x1b[${drawn}A\x1b[0J`);
-      const lines = [bold(title), ...items.map((it, i) => {
-        const text = `${it.label}${it.hint ? " " + dim(it.hint) : ""}`;
-        return i === index ? `${mint("❯")} ${mint(it.label)}${it.hint ? " " + dim(it.hint) : ""}` : `  ${text}`;
-      }), dim("↑/↓ to move · Enter to select · Esc to cancel")];
+      // Every line must fit on one screen row, otherwise wrapped rows break the cursor-up redraw
+      const max = Math.max(10, (process.stdout.columns || 80) - 3);
+      const cut = (t: string, n: number) => (t.length > n ? t.slice(0, Math.max(0, n - 1)) + "…" : t);
+      const lines = [
+        bold(cut(title, max)),
+        ...items.map((it, i) => {
+          const label = cut(it.label, max);
+          const room = max - label.length - 1;
+          const hint = it.hint && room > 4 ? " " + dim(cut(it.hint, room)) : "";
+          return i === index ? `${mint("❯")} ${mint(label)}${hint}` : `  ${label}${hint}`;
+        }),
+        dim(cut("↑/↓ to move · Enter to select · Esc to cancel", max)),
+      ];
       write(lines.join("\n") + "\n");
       drawn = lines.length;
     };
