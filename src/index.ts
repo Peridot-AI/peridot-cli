@@ -5,6 +5,8 @@ import { randomBytes } from "node:crypto";
 import { startThinking } from "./thinking";
 import { mint, dim, bold, red, amber } from "./style";
 import * as ui from "./ui";
+import { select, showCard } from "./card";
+import { usageLines } from "./usage";
 const { out, print } = ui;
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -43,77 +45,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (res.status === 401 && authToken()) throw new Error("Your session has expired. Use /login to sign in again.");
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status}) at ${API}${path}`);
   return data;
-}
-
-/**
- * Arrow-key menu shown as its own window: a box on the terminal's alternate screen. It disappears
- * when closed and the conversation underneath is back exactly as it was.
- * ↑/↓ to move, Enter to choose, Esc or Ctrl+C to cancel (resolves to null).
- */
-function select(title: string, items: { label: string; hint?: string }[], initial = 0): Promise<number | null> {
-  return new Promise((resolve) => {
-    let index = Math.min(Math.max(initial, 0), items.length - 1);
-    const write = (s: string) => process.stdout.write(s);
-    const cut = (t: string, n: number) => (t.length > n ? t.slice(0, Math.max(0, n - 1)) + "…" : t);
-
-    const draw = () => {
-      const cols = process.stdout.columns || 80;
-      const rows = process.stdout.rows || 24;
-      const width = Math.max(24, Math.min(76, cols - 4));
-      const inner = width - 2;
-      const room = inner - 4; // one space and the marker on the left, one space on the right
-
-      const row = (plain: string, styled: string) => dim("│") + " " + styled + " ".repeat(Math.max(0, inner - 2 - plain.length)) + " " + dim("│");
-      const head = cut(title, inner - 4);
-      const body = items.map((it, i) => {
-        const label = cut(it.label, room - 2);
-        const left = room - 2 - label.length - 1;
-        const hint = it.hint && left > 4 ? cut(it.hint, left) : "";
-        const plain = `  ${label}${hint ? " " + hint : ""}`;
-        const styled = i === index ? `${mint("❯")} ${mint(label)}${hint ? " " + dim(hint) : ""}` : plain.replace(hint, hint ? dim(hint) : "");
-        return row(plain, styled);
-      });
-      const foot = cut("↑/↓ move · Enter select · Esc cancel", inner - 2);
-      const box = [
-        dim("╭─ ") + bold(head) + " " + dim("─".repeat(Math.max(0, inner - head.length - 3)) + "╮"),
-        row("", ""),
-        ...body,
-        row("", ""),
-        row(foot, dim(foot)),
-        dim("╰" + "─".repeat(inner) + "╯"),
-      ];
-
-      const top = Math.max(1, Math.floor((rows - box.length) / 2) + 1);
-      const left = Math.max(1, Math.floor((cols - width) / 2) + 1);
-      write("\x1b[2J" + box.map((line, i) => `\x1b[${top + i};${left}H${line}`).join(""));
-    };
-
-    // Take the keys away from readline while the menu is open, so it can't echo or move the cursor
-    const saved = process.stdin.listeners("keypress") as ((...a: any[]) => void)[];
-    saved.forEach((l) => process.stdin.off("keypress", l));
-    write("\x1b[?1049h\x1b[?25l"); // alternate screen, hide the cursor
-    draw();
-
-    const finish = (value: number | null) => {
-      process.stdin.off("keypress", onKey);
-      process.stdout.off("resize", draw);
-      cancelLogin = null;
-      saved.forEach((l) => process.stdin.on("keypress", l));
-      write("\x1b[?25h\x1b[?1049l"); // back to the conversation
-      resolve(value);
-    };
-
-    const onKey = (_: string, key: { name?: string; ctrl?: boolean }) => {
-      if (!key) return;
-      if (key.name === "up") { index = (index - 1 + items.length) % items.length; draw(); }
-      else if (key.name === "down") { index = (index + 1) % items.length; draw(); }
-      else if (key.name === "return") finish(index);
-      else if (key.name === "escape" || (key.ctrl && key.name === "c")) finish(null);
-    };
-    cancelLogin = () => finish(null);
-    process.stdin.on("keypress", onKey);
-    process.stdout.on("resize", draw);
-  });
 }
 
 // ── Chat ──
@@ -200,13 +131,6 @@ async function send(text: string) {
 }
 
 // ── Slash commands ──
-const bar = (pct: number, width = 24) => {
-  const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * width);
-  return (pct >= 80 ? amber : mint)("█".repeat(filled)) + dim("░".repeat(width - filled));
-};
-const fmt = (n: number) => new Intl.NumberFormat("en-US").format(n || 0);
-const requests = (n: number) => `${fmt(n)} ${n === 1 ? "request" : "requests"}`;
-
 async function loadModels(): Promise<Model[]> {
   return (await api<{ models: Model[] }>("/models")).models;
 }
@@ -243,33 +167,8 @@ async function cmdModel(arg: string) {
 
 async function cmdUsage() {
   if (!authToken()) return print("Sign in with /login to see your usage.");
-  const { user, stats, limits } = await api<{ user: any; stats: any; limits?: any }>("/auth/me");
-  print(`${bold("Usage")}  ${dim(`${user.email} · ${limits?.plan ?? user.plan ?? "free"} plan`)}\n`);
-
-  if (limits?.unlimited) {
-    print(dim("Your account has no usage limits.\n"));
-  } else if (limits) {
-    const reset = limits.monthlyResetsAt
-      ? new Date(limits.monthlyResetsAt).toLocaleDateString("en-US", { month: "long", day: "numeric" })
-      : "";
-    print(`Monthly allowance  ${bar(limits.monthlyPercent)} ${limits.monthlyPercent}% used ${dim(reset ? `· resets ${reset}` : "")}`);
-    const dailyPct = limits.dailyLimit ? (limits.dailyUsed / limits.dailyLimit) * 100 : 0;
-    print(`Messages today     ${bar(dailyPct)} ${limits.dailyUsed} / ${limits.dailyLimit} ${dim("· resets at midnight UTC")}\n`);
-  }
-
-  print(`Total        ${fmt(stats.totalTokens)} tokens ${dim(`· ${requests(stats.requestCount)}`)}`);
-  print(`  Input      ${fmt(stats.inputTokens)}`);
-  print(`  Output     ${fmt(stats.outputTokens)}`);
-  print(`Today        ${fmt(stats.today?.totalTokens)} tokens ${dim(`· ${requests(stats.today?.requestCount)}`)}`);
-  print(`Last 7 days  ${fmt(stats.week?.totalTokens)} tokens ${dim(`· ${requests(stats.week?.requestCount)}`)}`);
-
-  if (stats.byModel?.length) {
-    print(`\n${bold("By model")}`);
-    for (const m of stats.byModel) {
-      const pct = stats.totalTokens ? Math.round((m.totalTokens / stats.totalTokens) * 100) : 0;
-      print(`  ${m.modelName.padEnd(24)} ${bar(pct, 16)} ${String(pct).padStart(3)}%  ${dim(fmt(m.totalTokens) + " tokens")}`);
-    }
-  }
+  const data = await api<{ user: any; stats: any; limits?: any }>("/auth/me");
+  await showCard("Usage", (text) => usageLines(data, text));
 }
 
 function openBrowser(url: string) {

@@ -21,7 +21,7 @@ Type a message, or / for commands.
 | Command | |
 |---|---|
 | `/model [name\|number]` | Show or change the model |
-| `/usage` | Token usage and plan limits |
+| `/usage` | A window with plan limits, a token heatmap of the last year and usage per model |
 | `/login` | Sign in with **Email** (on the Peridot website) or **Google**, both in your browser |
 | `/logout` · `/whoami` | Account |
 | `/clear` | Start a new conversation |

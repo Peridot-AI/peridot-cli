@@ -1,4 +1,4 @@
-const color = !!process.stdout.isTTY && !process.env.NO_COLOR;
+export const color = !!process.stdout.isTTY && !process.env.NO_COLOR;
 const sgr = (code: string) => (s: string) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
 
 export const mint = sgr("38;2;111;211;183");
@@ -13,3 +13,6 @@ export function bubbleLine(text: string, width: number): string {
   if (!color) return plain;
   return `\x1b[48;2;40;39;37m \x1b[38;2;111;211;183m›\x1b[39m${plain.slice(2)}\x1b[0m`;
 }
+
+/** Foreground color from an RGB triple (plain text when colors are off). */
+export const rgb = (r: number, g: number, b: number) => sgr(`38;2;${r};${g};${b}`);
