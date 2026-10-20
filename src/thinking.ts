@@ -33,7 +33,8 @@ const pick = (not?: string) => {
 
 const rgb = (c: number[]) => `\x1b[38;2;${c.map(Math.round).join(";")}m`;
 
-export function startThinking(out: NodeJS.WriteStream = process.stdout) {
+/** `draw` replaces the line the animation lives on, `clear` empties it. */
+export function startThinking(draw: (line: string) => void, clear: () => void) {
   let word = pick();
   let wordSince = Date.now();
   const began = Date.now();
@@ -54,20 +55,19 @@ export function startThinking(out: NodeJS.WriteStream = process.stdout) {
       const k = near * near * (3 - 2 * near);
       line += rgb(GREY.map((g, j) => g + (LIGHT[j] - g) * k)) + text[i];
     }
-    out.write(`\r\x1b[2K${dot === "⠶" ? MINT_BRIGHT : MINT}${dot}\x1b[0m \x1b[3m${line}\x1b[0m`);
+    draw(`${dot === "⠶" ? MINT_BRIGHT : MINT}${dot}\x1b[0m \x1b[3m${line}\x1b[0m`);
   };
 
-  out.write("\x1b[?25l");
   render();
   const timer = setInterval(render, TICK);
 
   return {
-    /** Removes the indicator and brings the cursor back. Safe to call more than once. */
+    /** Removes the indicator. Safe to call more than once. */
     stop() {
       if (stopped) return;
       stopped = true;
       clearInterval(timer);
-      out.write("\r\x1b[2K\x1b[?25h");
+      clear();
     },
   };
 }

@@ -1,0 +1,269 @@
+// Terminal layout: the conversation scrolls normally above, and a fixed input area sits at the
+// bottom of the output:
+//
+//   <output row>       where text is appended (this is also where the thinking animation lives)
+//   ──────────────     rule
+//   › your message     input row — the cursor lives here while you type
+//   ──────────────     rule
+//   status             account on the left, model on the right
+//
+// Output is written by erasing the input area, printing, and drawing it again below the new text,
+// so everything still ends up in the terminal's own scrollback.
+import { emitKeypressEvents } from "node:readline";
+import { dim, mint, bubbleLine } from "./style";
+
+const w = (s: string) => process.stdout.write(s);
+const cols = () => Math.max(20, process.stdout.columns || 80);
+const rowsN = () => process.stdout.rows || 24;
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+const crlf = (s: string) => s.replace(/\r?\n/g, "\r\n");
+
+let outCol = 0; // characters already on the output row
+let buf = "";
+let cur = 0;
+let busy = false;
+let started = false;
+let hint = "";
+const lines: string[] = [];
+let histIdx = -1;
+let draft = "";
+let status = { left: "", right: "" };
+
+type Handlers = {
+  onSubmit: (line: string) => void | Promise<void>;
+  /** Commands that start with the typed text (for Tab and the hint under the input) */
+  complete: (text: string) => string[];
+  /** Ctrl+C. `hasInput` tells whether there is text in the input */
+  onInterrupt: (hasInput: boolean) => void;
+};
+let handlers: Handlers;
+
+function trackCol(text: string) {
+  const W = cols();
+  for (const ch of text.replace(ANSI, "")) {
+    if (ch === "\n" || ch === "\r") outCol = 0;
+    else {
+      if (outCol >= W) outCol = 0;
+      outCol++;
+    }
+  }
+}
+
+function view() {
+  const avail = cols() - 4;
+  const start = Math.max(0, cur - (avail - 1));
+  return { text: buf.slice(start, start + avail), start };
+}
+const inputCol = () => 3 + cur - view().start;
+
+function statusRow() {
+  const W = cols();
+  const left = hint || status.left;
+  const right = status.right;
+  let l = left.length + right.length + 2 > W ? left.slice(0, Math.max(0, W - right.length - 3)) + "…" : left;
+  const gap = Math.max(1, W - l.length - right.length - 1);
+  return dim(" " + l + " ".repeat(gap) + right);
+}
+
+function inputRow() {
+  const { text } = view();
+  return `${mint("›")} ${text || dim('Try "/help" or just ask something')}`;
+}
+
+/** Draws the input area below the output row. The cursor must be on the output row. */
+function writeChrome() {
+  const rule = dim("─".repeat(cols()));
+  w(`\r\n${rule}\r\n\x1b[2K${inputRow()}\r\n${rule}\r\n\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
+}
+
+const toOutput = () => w(`\x1b[2A\x1b[${outCol + 1}G`);
+
+/** Appends text to the conversation. */
+export function out(text: string) {
+  if (!started) return void w(crlf(text));
+  const t = crlf(text);
+  toOutput();
+  w("\x1b[0J" + t);
+  trackCol(t);
+  if (outCol >= cols()) { w("\r\n"); outCol = 0; }
+  writeChrome();
+}
+
+export const print = (...parts: unknown[]) => out(parts.join(" ") + "\n");
+
+/** Replaces the content of the output row (used by the thinking animation). */
+export function setLine(line: string) {
+  if (!started) return;
+  w(`\x1b[2A\r\x1b[2K${line}\x1b[2B\x1b[${inputCol()}G`);
+  outCol = 0;
+}
+
+/** A message you sent, shown on a slightly lighter background across the full width. */
+export function userBubble(text: string) {
+  const W = cols();
+  const width = W - 4;
+  const rows: string[] = [];
+  for (const para of text.split("\n")) {
+    if (!para) rows.push("");
+    for (let i = 0; i < para.length; i += width) rows.push(para.slice(i, i + width));
+  }
+  return rows.map((r) => bubbleLine(r, W)).join("\n");
+}
+
+function redrawInput() {
+  w(`\r\x1b[2K${inputRow()}\x1b[${inputCol()}G`);
+}
+
+function updateHint() {
+  const next =
+    buf.startsWith("/") && !buf.includes(" ") ? handlers.complete(buf).join("  ") : "";
+  if (next === hint) return;
+  hint = next;
+  w(`\x1b[2B\r\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
+}
+
+export function setStatus(left: string, right: string) {
+  status = { left, right };
+  if (!started) return;
+  w(`\x1b[2B\r\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
+}
+
+export function setBusy(value: boolean) {
+  busy = value;
+  if (started) w(value ? "\x1b[?25l" : "\x1b[?25h");
+}
+
+export const hasInput = () => buf.length > 0;
+export function clearInput() {
+  buf = "";
+  cur = 0;
+  histIdx = -1;
+  redrawInput();
+  updateHint();
+}
+
+// ── Keys ──
+const isWord = (c: string) => /\w/.test(c);
+function wordLeft() {
+  let i = cur;
+  while (i > 0 && !isWord(buf[i - 1])) i--;
+  while (i > 0 && isWord(buf[i - 1])) i--;
+  return i;
+}
+function wordRight() {
+  let i = cur;
+  while (i < buf.length && !isWord(buf[i])) i++;
+  while (i < buf.length && isWord(buf[i])) i++;
+  return i;
+}
+
+function edit(next: string, nextCur: number) {
+  buf = next;
+  cur = Math.max(0, Math.min(nextCur, next.length));
+  histIdx = -1;
+  redrawInput();
+  updateHint();
+}
+
+function recall(delta: number) {
+  if (!lines.length) return;
+  if (histIdx === -1) {
+    if (delta > 0) return;
+    draft = buf;
+    histIdx = lines.length;
+  }
+  histIdx = Math.max(0, Math.min(lines.length, histIdx + delta));
+  buf = histIdx === lines.length ? draft : lines[histIdx];
+  if (histIdx === lines.length) histIdx = -1;
+  cur = buf.length;
+  redrawInput();
+  updateHint();
+}
+
+function tab() {
+  if (!buf.startsWith("/") || buf.includes(" ")) return;
+  const hits = handlers.complete(buf);
+  if (!hits.length) return;
+  if (hits.length === 1) return edit(hits[0] + " ", hits[0].length + 1);
+  let prefix = hits[0];
+  for (const h of hits) while (!h.startsWith(prefix)) prefix = prefix.slice(0, -1);
+  if (prefix.length > buf.length) edit(prefix, prefix.length);
+}
+
+async function submit() {
+  const line = buf.trim();
+  if (line) lines.push(line);
+  buf = "";
+  cur = 0;
+  histIdx = -1;
+  redrawInput();
+  updateHint();
+  if (line) await handlers.onSubmit(line);
+}
+
+function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean } | undefined) {
+  if (!key) return;
+  if (key.ctrl && key.name === "c") return handlers.onInterrupt(buf.length > 0);
+  if (busy) return;
+  const word = key.ctrl || key.meta;
+
+  switch (key.name) {
+    case "return": return void submit();
+    case "tab": return tab();
+    case "backspace": return cur > 0 ? edit(buf.slice(0, cur - 1) + buf.slice(cur), cur - 1) : undefined;
+    case "delete": return edit(buf.slice(0, cur) + buf.slice(cur + 1), cur);
+    case "left": return void ((cur = word ? wordLeft() : Math.max(0, cur - 1)), redrawInput());
+    case "right": return void ((cur = word ? wordRight() : Math.min(buf.length, cur + 1)), redrawInput());
+    case "home": return void ((cur = 0), redrawInput());
+    case "end": return void ((cur = buf.length), redrawInput());
+    case "up": return recall(-1);
+    case "down": return recall(1);
+  }
+  if (key.ctrl) {
+    switch (key.name) {
+      case "a": return void ((cur = 0), redrawInput());
+      case "e": return void ((cur = buf.length), redrawInput());
+      case "u": return edit(buf.slice(cur), 0);
+      case "k": return edit(buf.slice(0, cur), cur);
+      case "w": { const i = wordLeft(); return edit(buf.slice(0, i) + buf.slice(cur), i); }
+      case "d": return buf ? undefined : handlers.onInterrupt(false);
+    }
+    return;
+  }
+  if (str && !key.meta && !/[\x00-\x1f\x7f]/.test(str)) edit(buf.slice(0, cur) + str + buf.slice(cur), cur + str.length);
+}
+
+function relayout() {
+  if (!started) return;
+  toOutput();
+  w("\x1b[0J");
+  writeChrome();
+}
+
+/** Clears the screen, prints `intro`, and shows the input area at the bottom. */
+export function begin(intro: string, h: Handlers) {
+  handlers = h;
+  started = true;
+  const t = crlf(intro);
+  w("\x1b[2J\x1b[H" + t);
+  trackCol(t);
+  const used = intro.replace(ANSI, "").split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / cols())), 0) - 1;
+  const pad = rowsN() - 5 - used;
+  if (pad > 0) w("\r\n".repeat(pad));
+  writeChrome();
+
+  process.stdin.setRawMode(true);
+  emitKeypressEvents(process.stdin);
+  process.stdin.on("keypress", onKey);
+  process.stdin.resume();
+  process.stdout.on("resize", relayout);
+}
+
+/** Removes the input area and prints a last line. */
+export function end(message = "") {
+  if (!started) return;
+  started = false;
+  toOutput();
+  w("\x1b[0J" + (message ? crlf(message) + "\r\n" : "") + "\x1b[?25h");
+  try { process.stdin.setRawMode(false); } catch {}
+}
