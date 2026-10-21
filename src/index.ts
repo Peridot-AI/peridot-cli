@@ -264,7 +264,9 @@ async function cmdResume(arg: string) {
   history = messages.map((m) => ({ role: m.role, content: m.content }));
   agentMessages = messages.map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
 
-  // Show the end of the chat so you know where you left off
+  // A clean screen, then the end of the chat so you know where you left off
+  freshScreen();
+  out("\n");
   const SHOWN = 10;
   if (messages.length > SHOWN) print(dim(`… ${messages.length - SHOWN} earlier messages`));
   for (const m of messages.slice(-SHOWN)) {
@@ -278,6 +280,7 @@ async function cmdResume(arg: string) {
 }
 
 async function sendAgent(text: string) {
+  out(`\n${ui.userBubble(text)}\n\n`);
   // After an interrupted step the history ends with tool results: the new text joins that message
   const last = agentMessages[agentMessages.length - 1];
   const before = agentMessages.length;
@@ -542,7 +545,7 @@ const COMMANDS: Record<string, Command> = {
   logout: { desc: "Sign out", run: cmdLogout },
   whoami: { desc: "Show the signed-in account", run: cmdWhoami },
   resume: { desc: "Continue one of your recent chats", usage: "[count]", run: cmdResume },
-  clear: { desc: "Start a new conversation", run: () => { history = []; agentMessages = []; convId = null; print(dim("Conversation cleared.")); } },
+  clear: { desc: "Start a new conversation", run: () => { history = []; agentMessages = []; convId = null; freshScreen(); } },
   exit: { desc: "Quit Peridot", run: () => quit() },
 };
 const ALIASES: Record<string, string> = { quit: "exit", q: "exit", new: "clear", "?": "help" };
@@ -581,8 +584,12 @@ async function cycleMode() {
 
 async function refreshStatus() {
   paintStatus();
-  signedIn = !!authToken() && (await api("/auth/me").then(() => true, () => false));
-  modelName = (await loadModels().catch(() => [])).find((m) => m.id === (config.model || ""))?.name ?? config.model ?? "";
+  const me = authToken() ? await api<{ user: any; limits?: any }>("/auth/me").catch(() => null) : null;
+  signedIn = !!me;
+  const models = await loadModels().catch(() => []);
+  modelName = models.find((m) => m.id === (config.model || ""))?.name ?? config.model ?? "";
+  start.plan = planName(me);
+  start.model = models.find((m) => m.id === (config.model || "fast"))?.name ?? (config.model || start.model);
   paintStatus();
 }
 
@@ -611,6 +618,29 @@ function stopPeri() {
   periPlaying = false;
 }
 
+// ── Start screen (also drawn again by /clear and /resume) ──
+const PLAN_NAMES: Record<string, string> = { free: "Peridot Free", plus: "Peridot Plus", extended: "Peridot Extended 5x", extended10: "Peridot Extended 10x" };
+const start = { model: "", plan: "", folder: "", broad: false };
+
+function planName(me: { user: any; limits?: any } | null): string {
+  if (!me) return "not signed in";
+  return me.user.role === "admin" ? "Admin" : PLAN_NAMES[me.limits?.plan ?? me.user.plan ?? "free"] ?? "Peridot Free";
+}
+
+function introText(): string {
+  return (
+    `\n${startScreen(startLines({ version: VERSION, model: start.model, plan: start.plan, folder: start.folder }))}\n\n` +
+    (start.broad ? `${amber("This is a very broad folder. Open Peridot in your project folder to keep it focused.")}\n` : "") +
+    `${dim("Type a message, / for commands, ! for a shell command.")}\n`
+  );
+}
+
+/** Clears the screen and shows the start screen again (Peri is clickable again too). */
+function freshScreen() {
+  stopPeri();
+  ui.restart(introText());
+}
+
 // ── Main ──
 async function main() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -624,22 +654,17 @@ async function main() {
   const where = home && root.startsWith(home) ? "~" + root.slice(home.length) : root;
   const broad = root === home || root === "/" || /^[A-Za-z]:\\?$/.test(root);
   // Model and plan for the start screen; never hold up the start for more than a moment
-  const PLAN_NAMES: Record<string, string> = { free: "Peridot Free", plus: "Peridot Plus", extended: "Peridot Extended 5x", extended10: "Peridot Extended 10x" };
   const timeout = new Promise<null>((r) => setTimeout(() => r(null), 1500));
   const [me, models] = await Promise.all([
     authToken() ? Promise.race([api<{ user: any; limits?: any }>("/auth/me").catch(() => null), timeout]) : null,
     Promise.race([loadModels().catch(() => null), timeout]),
   ]);
-  const wanted = config.model || "fast";
-  const model = models?.find((m) => m.id === wanted)?.name ?? (config.model || "Default model");
-  const plan = me
-    ? me.user.role === "admin" ? "Admin" : PLAN_NAMES[me.limits?.plan ?? me.user.plan ?? "free"] ?? "Peridot Free"
-    : "not signed in";
+  start.folder = where;
+  start.broad = broad;
+  start.model = models?.find((m) => m.id === (config.model || "fast"))?.name ?? (config.model || "Default model");
+  start.plan = planName(me);
 
-  ui.begin(
-    `\n${startScreen(startLines({ version: VERSION, model, plan, folder: where }))}\n\n` +
-      (broad ? `${amber("This is a very broad folder. Open Peridot in your project folder to keep it focused.")}\n` : "") +
-      `${dim("Type a message, / for commands, ! for a shell command.")}\n`,
+  ui.begin(introText(),
     {
     // Commands starting with what was typed first, then ones that only contain it
     commands: (text) => {

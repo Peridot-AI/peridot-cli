@@ -431,21 +431,35 @@ function relayout() {
   writeChrome();
 }
 
-/** Clears the screen, prints `intro`, and shows the input area at the bottom. */
-export function begin(intro: string, h: Handlers) {
-  handlers = h;
-  started = true;
+/** Clears the screen and its scrollback, prints `intro` and the input area right below it. */
+function drawStart(intro: string) {
   const t = crlf(intro);
-  if (h.onClick) {
+  if (copiedTimer) { clearTimeout(copiedTimer); copiedTimer = null; }
+  sel = null;
+  highlighted = new Set();
+  outCol = 0;
+  if (handlers.onClick) {
     screen = new Screen(rowsN(), cols());
-    mouseRows = h.mouseRows ?? 1;
+    mouseRows = handlers.mouseRows ?? 1;
     setMouse(true);
   }
-  w("\x1b[2J\x1b[H" + t);
+  w("\x1b[2J\x1b[3J\x1b[H" + t);
   trackCol(t);
   // The input area follows the intro directly (no padding down to the bottom of the screen), so the
   // conversation starts right under it and pushes the input down as it grows
   writeChrome();
+}
+
+/** Starts over on a clean screen showing `intro` (used by /clear and /resume). */
+export function restart(intro: string) {
+  if (started) drawStart(intro);
+}
+
+/** Clears the screen, prints `intro`, and shows the input area at the bottom. */
+export function begin(intro: string, h: Handlers) {
+  handlers = h;
+  started = true;
+  drawStart(intro);
 
   process.stdin.setRawMode(true);
   emitKeypressEvents(process.stdin);
