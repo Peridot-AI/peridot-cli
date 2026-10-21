@@ -7,7 +7,7 @@ import { mint, dim, bold, red, amber } from "./style";
 import * as ui from "./ui";
 import { select, showCard, cut } from "./card";
 import { usageLines, type HeatView } from "./usage";
-import { startScreen, startLines } from "./mascot";
+import { startScreen, startLines, catchTheFly, PERI_TOP, PERI_WIDTH } from "./mascot";
 import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHooks } from "./agent";
 import { root, runCommand, stopCommands } from "./tools";
 const { out, print } = ui;
@@ -502,6 +502,31 @@ async function refreshStatus() {
   paintStatus();
 }
 
+// ── Peri, the mascot: clicking it on the start screen plays a little animation ──
+let periTimer: ReturnType<typeof setTimeout> | null = null;
+let periPlaying = false;
+
+function playPeri() {
+  if (periPlaying) return;
+  periPlaying = true;
+  const frames = catchTheFly();
+  let i = 0;
+  const next = () => {
+    const f = frames[i++];
+    if (!f) { periPlaying = false; periTimer = null; return; }
+    // The empty line above Peri plus its four rows, so it can jump up into it
+    ui.drawAt(PERI_TOP, 1, f.rows);
+    periTimer = setTimeout(next, f.ms);
+  };
+  next();
+}
+
+function stopPeri() {
+  if (periTimer) clearTimeout(periTimer);
+  periTimer = null;
+  periPlaying = false;
+}
+
 // ── Main ──
 async function main() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -534,6 +559,10 @@ async function main() {
     {
     complete: (text) => Object.keys(COMMANDS).map((c) => "/" + c).filter((c) => c.startsWith(text)),
     onCycle: () => void cycleMode(),
+    onClick: (x, y) => {
+      if (x <= PERI_WIDTH && y > PERI_TOP && y <= PERI_TOP + 4) playPeri();
+    },
+    onStartGone: stopPeri,
     onInterrupt: (hasInput) => {
       if (abort) { abort.abort(); stopCommands(); return; }
       if (cancelLogin) return cancelLogin();
@@ -569,7 +598,7 @@ async function main() {
   refreshStatus();
 }
 
-process.on("exit", () => process.stdout.write("\x1b[?25h"));
+process.on("exit", () => { ui.mouseOff(); process.stdout.write("\x1b[?25h"); });
 process.on("SIGINT", () => quit());
 process.on("SIGTERM", () => quit());
 

@@ -39,8 +39,50 @@ type Handlers = {
   onInterrupt: (hasInput: boolean) => void;
   /** Shift+Tab */
   onCycle: () => void;
+  /** A left click on the start screen (1-based column and row). Only while nothing else was printed. */
+  onClick?: (x: number, y: number) => void;
+  /** The start screen scrolled away (first output); anything drawn on it must stop. */
+  onStartGone?: () => void;
 };
 let handlers: Handlers;
+
+// ── Mouse (start screen only) ──
+// Mouse reporting takes over the wheel and plain text selection, so it is on only while the start
+// screen is untouched; the first output turns it off for good.
+let mouse = false;
+let mouseSeq: string | null = null; // the rest of an "ESC [ <" report while it arrives key by key
+
+function setMouse(on: boolean) {
+  if (on === mouse) return;
+  mouse = on;
+  w(on ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1000l\x1b[?1006l");
+}
+/** Also used on exit, so a crash never leaves the terminal reporting the mouse. */
+export const mouseOff = () => setMouse(false);
+
+function leaveStartScreen() {
+  if (!mouse) return;
+  setMouse(false);
+  handlers.onStartGone?.();
+}
+
+/** Mouse reports reach us as ordinary keys ("ESC [ <", "0", ";", "5", …, "M"). Returns true when it ate the key. */
+function mouseKey(str: string | undefined, key: { sequence?: string; code?: string }) {
+  if (key.code === "[<") { mouseSeq = ""; return true; }
+  if (mouseSeq === null) return false;
+  const ch = str ?? key.sequence ?? "";
+  if (ch !== "M" && ch !== "m") { mouseSeq += ch; return true; }
+  const [button, x, y] = mouseSeq.split(";").map(Number);
+  mouseSeq = null;
+  if (ch === "M" && button === 0) handlers.onClick?.(x, y);
+  return true;
+}
+
+/** Draws rows at a fixed place on screen (1-based) and puts the cursor back. */
+export function drawAt(row: number, col: number, rows: string[]) {
+  if (!started) return;
+  w("\x1b7" + rows.map((r, i) => `\x1b[${row + i};${col}H${r}`).join("") + "\x1b8");
+}
 
 function trackCol(text: string) {
   const W = cols();
@@ -95,6 +137,7 @@ const toOutput = () => w(`\x1b[2A\x1b[${outCol + 1}G`);
 /** Appends text to the conversation. */
 export function out(text: string) {
   if (!started) return void w(crlf(text));
+  leaveStartScreen();
   const t = crlf(text);
   toOutput();
   w("\x1b[0J" + t);
@@ -217,8 +260,9 @@ async function submit() {
   if (line) await handlers.onSubmit(line);
 }
 
-function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean } | undefined) {
+function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean; sequence?: string; code?: string } | undefined) {
   if (!key) return;
+  if (mouseKey(str, key)) return;
   if (key.ctrl && key.name === "c") return handlers.onInterrupt(buf.length > 0);
   if (busy) return;
   const word = key.ctrl || key.meta;
@@ -273,6 +317,8 @@ export function begin(intro: string, h: Handlers) {
   const pad = rowsN() - 5 - used;
   if (pad > 0) w("\r\n".repeat(pad));
   writeChrome();
+  // When the intro did not fit, it scrolled and its rows are no longer where we would draw
+  if (h.onClick && pad >= 0) setMouse(true);
 
   process.stdin.setRawMode(true);
   emitKeypressEvents(process.stdin);
@@ -284,6 +330,7 @@ export function begin(intro: string, h: Handlers) {
 /** Removes the input area and prints a last line. */
 export function end(message = "") {
   if (!started) return;
+  setMouse(false);
   started = false;
   toOutput();
   w("\x1b[0J" + (message ? crlf(message) + "\r\n" : "") + "\x1b[?25h");
