@@ -9,10 +9,10 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
-    "build": "bun build --compile src/index.ts --outfile dist/peridot",
-    "build:linux": "bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist/peridot-linux",
-    "build:macos": "bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist/peridot-macos",
-    "build:windows": "bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist/peridot-windows.exe"
+    "build": "bun scripts/build.ts",
+    "build:linux": "bun scripts/build.ts linux",
+    "build:macos": "bun scripts/build.ts macos",
+    "build:windows": "bun scripts/build.ts windows"
   },
   "devDependencies": {
     "@types/bun": "latest"

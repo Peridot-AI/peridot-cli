@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { startThinking } from "./thinking";
 import { MarkdownStream } from "./markdown";
+import { VERSION } from "./version";
 import { mint, dim, bold, red, amber } from "./style";
 import * as ui from "./ui";
 import { select, showCard, cut } from "./card";
@@ -16,7 +17,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const VERSION = "0.4.0";
 const API = (process.env.PERIDOT_API_URL || "https://peridot.ai/api").replace(/\/+$/, "");
 const WEB = (process.env.PERIDOT_WEB_URL || "https://peridot.ai").replace(/\/+$/, "");
 // Registered as a redirect URI of the Google OAuth client (same one the desktop app uses)
