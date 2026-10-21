@@ -7,6 +7,7 @@ import { mint, dim, bold, red, amber } from "./style";
 import * as ui from "./ui";
 import { select, showCard, cut } from "./card";
 import { usageLines, type HeatView } from "./usage";
+import { startScreen, startLines } from "./mascot";
 import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHooks } from "./agent";
 import { root, runCommand, stopCommands } from "./tools";
 const { out, print } = ui;
@@ -513,8 +514,21 @@ async function main() {
   const home = process.env.HOME || process.env.USERPROFILE || "";
   const where = home && root.startsWith(home) ? "~" + root.slice(home.length) : root;
   const broad = root === home || root === "/" || /^[A-Za-z]:\\?$/.test(root);
+  // Model and plan for the start screen; never hold up the start for more than a moment
+  const PLAN_NAMES: Record<string, string> = { free: "Peridot Free", plus: "Peridot Plus", extended: "Peridot Extended 5x", extended10: "Peridot Extended 10x" };
+  const timeout = new Promise<null>((r) => setTimeout(() => r(null), 1500));
+  const [me, models] = await Promise.all([
+    authToken() ? Promise.race([api<{ user: any; limits?: any }>("/auth/me").catch(() => null), timeout]) : null,
+    Promise.race([loadModels().catch(() => null), timeout]),
+  ]);
+  const wanted = config.model || "fast";
+  const model = models?.find((m) => m.id === wanted)?.name ?? (config.model || "Default model");
+  const plan = me
+    ? me.user.role === "admin" ? "Admin" : PLAN_NAMES[me.limits?.plan ?? me.user.plan ?? "free"] ?? "Peridot Free"
+    : "not signed in";
+
   ui.begin(
-    `\n${mint(LOGO)} ${bold("Peridot")} ${dim("v" + VERSION)}\n${dim("Working in " + where)}\n` +
+    `\n${startScreen(startLines({ version: VERSION, model, plan, folder: where }))}\n\n` +
       (broad ? `${amber("This is a very broad folder. Open Peridot in your project folder to keep it focused.")}\n` : "") +
       `${dim("Type a message, / for commands, ! for a shell command.")}\n`,
     {
