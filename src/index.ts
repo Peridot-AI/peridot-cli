@@ -3,6 +3,7 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { startThinking } from "./thinking";
+import { MarkdownStream } from "./markdown";
 import { mint, dim, bold, red, amber } from "./style";
 import * as ui from "./ui";
 import { select, showCard, cut } from "./card";
@@ -58,6 +59,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 async function streamAnswer(thinking: { stop(): void }): Promise<string> {
   abort = new AbortController();
   let answer = "";
+  const md = new MarkdownStream();
   // Redrawing the input area is not free, so text is shown in small batches
   let pending = "";
   let lastFlush = 0;
@@ -96,16 +98,18 @@ async function streamAnswer(thinking: { stop(): void }): Promise<string> {
           if (chunk) {
             if (!answer) { thinking.stop(); pending = `${mint(LOGO)} `; }
             answer += chunk;
-            pending += chunk;
+            pending += md.push(chunk);
             flush();
           }
         }
       }
     }
+    pending += md.end();
     flush(true);
     out("\n");
   } catch (e) {
     thinking.stop();
+    pending += md.end();
     flush(true);
     if ((e as Error).name === "AbortError") {
       out(dim("\n[interrupted]\n"));
@@ -211,6 +215,7 @@ async function sendAgent(text: string) {
   abort = new AbortController();
   let thinking: { stop(): void } = { stop() {} };
   let started = false;
+  let md = new MarkdownStream();
   let pending = "";
   let lastFlush = 0;
   const flush = (force = false) => {
@@ -220,12 +225,13 @@ async function sendAgent(text: string) {
   const hooks: AgentHooks = {
     onModelStart: () => { thinking = startThinking(ui.setLine, () => ui.setLine("")); },
     onText: (chunk) => {
-      if (!started) { thinking.stop(); started = true; pending = `${mint(LOGO)} `; }
-      pending += chunk;
+      if (!started) { thinking.stop(); started = true; pending = `${mint(LOGO)} `; md = new MarkdownStream(); }
+      pending += md.push(chunk);
       flush();
     },
     onTurnEnd: () => {
       thinking.stop();
+      pending += md.end();
       flush(true);
       if (started) out("\n");
       started = false;
@@ -245,6 +251,7 @@ async function sendAgent(text: string) {
     }, hooks, abort.signal);
   } catch (e) {
     thinking.stop();
+    pending += md.end();
     flush(true);
     if ((e as Error).name === "AbortError") print(dim("[interrupted]"));
     else {

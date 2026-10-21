@@ -4,6 +4,9 @@ const sgr = (code: string) => (s: string) => (color ? `\x1b[${code}m${s}\x1b[0m`
 export const mint = sgr("38;2;111;211;183");
 export const dim = sgr("2");
 export const bold = sgr("1");
+export const italic = sgr("3");
+export const underline = sgr("4");
+export const strike = sgr("9");
 export const red = sgr("38;2;248;113;113");
 export const amber = sgr("38;2;245;158;107");
 
