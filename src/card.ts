@@ -2,6 +2,8 @@
 // closes, the conversation underneath is back exactly as it was.
 import { dim, bold } from "./style";
 
+import { pauseMouse, resumeMouse } from "./mouse";
+
 const w = (s: string) => process.stdout.write(s);
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 export const vis = (s: string) => s.replace(ANSI, "").length;
@@ -67,6 +69,7 @@ export function popup<T>(
     // Take the keys away from the input while the window is open
     const saved = process.stdin.listeners("keypress") as ((...a: any[]) => void)[];
     saved.forEach((l) => process.stdin.off("keypress", l));
+    pauseMouse(); // clicks would arrive as stray keys
     w("\x1b[?1049h\x1b[?25l"); // alternate screen, hide the cursor
     draw();
 
@@ -75,6 +78,7 @@ export function popup<T>(
       process.stdout.off("resize", draw);
       saved.forEach((l) => process.stdin.on("keypress", l));
       w("\x1b[?25h\x1b[?1049l"); // back to the conversation
+      resumeMouse();
       resolve(value);
     };
     const handler = (_: string, key: Key) => {

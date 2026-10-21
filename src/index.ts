@@ -585,6 +585,7 @@ async function main() {
     onClick: (x, y) => {
       if (x <= PERI_WIDTH && y > PERI_TOP && y <= PERI_TOP + 4) playPeri();
     },
+    mouseRows: PERI_TOP + 4,
     onStartGone: stopPeri,
     onInterrupt: (hasInput) => {
       if (abort) { abort.abort(); stopCommands(); return; }
