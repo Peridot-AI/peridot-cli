@@ -411,8 +411,7 @@ function relayout() {
   // The terminal re-wrapped what was on screen: the old full-width rule now takes several rows
   const ruleRows = Math.max(1, Math.ceil(chromeW / W));
   outCol = Math.min(outCol, W - 1);
-  w(`\x1b[${ruleRows + 1}A\x1b[${outCol + 1}G\x1b[0J`); // erase the old input area
-  w(`\x1b[${Math.max(1, rowsN() - 4)};${outCol + 1}H`); // output row, right above the bottom of the screen
+  w(`\x1b[${ruleRows + 1}A\x1b[${outCol + 1}G\x1b[0J`); // erase the old input area, back on the output row
   writeChrome();
 }
 
@@ -424,12 +423,12 @@ export function begin(intro: string, h: Handlers) {
   w("\x1b[2J\x1b[H" + t);
   trackCol(t);
   introRows = wrapStyled(intro.replace(/\n$/, ""), cols());
-  const used = intro.replace(ANSI, "").split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / cols())), 0) - 1;
-  const pad = rowsN() - 5 - used;
-  if (pad > 0) w("\r\n".repeat(pad));
+  // The input area follows the intro directly (no padding down to the bottom of the screen), so the
+  // conversation starts right under it and pushes the input down as it grows
+  const used = intro.replace(ANSI, "").split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / cols())), 0);
   writeChrome();
   // When the intro did not fit, it scrolled and its rows are no longer where we would draw
-  if (h.onClick && pad >= 0) setMouse(true);
+  if (h.onClick && used + 4 <= rowsN()) setMouse(true);
 
   process.stdin.setRawMode(true);
   emitKeypressEvents(process.stdin);

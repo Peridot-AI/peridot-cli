@@ -124,6 +124,17 @@ async function streamAnswer(thinking: { stop(): void }): Promise<string> {
   return answer;
 }
 
+/** Provider errors sometimes arrive as raw JSON ({"error":{"message":…}}); keep just the message. */
+function errorText(e: unknown): string {
+  const msg = (e as Error)?.message ?? String(e);
+  try {
+    const data = JSON.parse(msg);
+    return data?.error?.message ?? data?.message ?? msg;
+  } catch {
+    return msg;
+  }
+}
+
 async function sendChat(text: string) {
   history.push({ role: "user", content: text });
   out(`\n${ui.userBubble(text)}\n\n`);
@@ -134,7 +145,7 @@ async function sendChat(text: string) {
     else history.pop();
   } catch (e) {
     history.pop();
-    print(red(`Error: ${(e as Error).message}`));
+    print(red(`Error: ${errorText(e)}`));
   } finally {
     thinking.stop();
   }
@@ -255,7 +266,7 @@ async function sendAgent(text: string) {
     flush(true);
     if ((e as Error).name === "AbortError") print(dim("[interrupted]"));
     else {
-      const msg = (e as Error).message;
+      const msg = errorText(e);
       print(red(`Error: ${/401|Sign in/.test(msg) ? "Your session has expired or you are not signed in. Use /login." : msg}`));
     }
     // Nothing was done yet: forget the message so the next one starts clean
