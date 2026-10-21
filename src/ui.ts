@@ -10,6 +10,7 @@
 // Output is written by erasing the input area, printing, and drawing it again below the new text,
 // so everything still ends up in the terminal's own scrollback.
 import { emitKeypressEvents } from "node:readline";
+import { spawn } from "node:child_process";
 import { dim, mint, bubbleLine } from "./style";
 import { fit, vis } from "./card";
 
@@ -55,14 +56,17 @@ let mouseSeq: string | null = null; // the rest of an "ESC [ <" report while it 
 function setMouse(on: boolean) {
   if (on === mouse) return;
   mouse = on;
-  w(on ? "\x1b[?1000h\x1b[?1006h" : "\x1b[?1000l\x1b[?1006l");
+  // 1002: presses, releases and moves while a button is held (for selecting); 1006: readable coordinates
+  w(on ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1002l\x1b[?1006l");
 }
 /** Also used on exit, so a crash never leaves the terminal reporting the mouse. */
 export const mouseOff = () => setMouse(false);
 
 function leaveStartScreen() {
+  if (copiedTimer) { clearTimeout(copiedTimer); copiedTimer = null; }
   if (!mouse) return;
   setMouse(false);
+  sel = null;
   handlers.onStartGone?.();
 }
 
@@ -74,8 +78,114 @@ function mouseKey(str: string | undefined, key: { sequence?: string; code?: stri
   if (ch !== "M" && ch !== "m") { mouseSeq += ch; return true; }
   const [button, x, y] = mouseSeq.split(";").map(Number);
   mouseSeq = null;
-  if (ch === "M" && button === 0) handlers.onClick?.(x, y);
+  if (ch === "M" && button === 0) sel = { x, y, x2: x, y2: y, moved: false };
+  else if (ch === "M" && button === 32 && sel) {
+    if (x !== sel.x2 || y !== sel.y2) { sel.x2 = x; sel.y2 = y; sel.moved = true; paintSelection(); }
+  } else if (ch === "m" && sel) {
+    const done = sel;
+    sel = null;
+    if (!done.moved) handlers.onClick?.(x, y);
+    else {
+      const text = selectedText(done);
+      paintSelection();
+      if (text) copyToClipboard(text);
+    }
+  }
   return true;
+}
+
+// ── Selecting and copying text on the start screen ──
+// While the mouse is ours the terminal cannot select, so we do it: drag to highlight, release to copy.
+// Only the intro rows are selectable; we know exactly what is drawn there.
+type Selection = { x: number; y: number; x2: number; y2: number; moved: boolean };
+let sel: Selection | null = null;
+let introRows: string[] = []; // the start screen as drawn: styled rows, already wrapped to the width
+let highlighted = new Set<number>();
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+const plain = (s: string) => s.replace(ANSI, "");
+
+/** Splits styled text into rows of `width` visible characters, like the terminal wraps it. */
+function wrapStyled(text: string, width: number): string[] {
+  const rows: string[] = [];
+  for (const line of text.split("\n")) {
+    let row = "";
+    let n = 0;
+    for (const part of line.split(/(\x1b\[[0-9;?]*[A-Za-z])/)) {
+      if (part.startsWith("\x1b")) { row += part; continue; }
+      for (const ch of part) {
+        if (n === width) { rows.push(row + "\x1b[0m"); row = ""; n = 0; }
+        row += ch;
+        n++;
+      }
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** Visible columns [from, to) of row y (1-based) that the selection covers, or null. */
+function range(s: Selection, y: number): [number, number] | null {
+  const [a, b] = s.y < s.y2 || (s.y === s.y2 && s.x <= s.x2) ? [[s.x, s.y], [s.x2, s.y2]] : [[s.x2, s.y2], [s.x, s.y]];
+  if (y < a[1] || y > b[1]) return null;
+  return [y === a[1] ? a[0] - 1 : 0, y === b[1] ? b[0] : Infinity];
+}
+
+function selectedText(s: Selection) {
+  const out: string[] = [];
+  introRows.forEach((row, i) => {
+    const r = range(s, i + 1);
+    if (r) out.push([...plain(row)].slice(r[0], r[1]).join("").trimEnd());
+  });
+  return out.join("\n").replace(/^\n+|\n+$/g, "");
+}
+
+/** Draws the current selection in reverse video, and puts back rows that are no longer selected. */
+function paintSelection() {
+  const next = new Set<number>();
+  let draw = "";
+  introRows.forEach((row, i) => {
+    const y = i + 1;
+    const r = sel ? range(sel, y) : null;
+    if (r) next.add(y);
+    if (!r && !highlighted.has(y)) return;
+    let line = row;
+    if (r) {
+      const chars = [...plain(row)];
+      const to = Math.min(chars.length, r[1]);
+      line = chars.slice(0, r[0]).join("") + "\x1b[7m" + chars.slice(r[0], to).join("") + "\x1b[27m" + chars.slice(to).join("");
+    }
+    draw += `\x1b[${y};1H\x1b[2K${line}\x1b[0m`;
+  });
+  highlighted = next;
+  if (draw) w("\x1b7" + draw + "\x1b8");
+}
+
+function copyToClipboard(text: string) {
+  // OSC 52 asks the terminal itself (works over SSH too); the system tool covers terminals without it
+  w(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
+  const tool =
+    process.platform === "darwin" ? ["pbcopy"]
+    : process.platform === "win32" ? ["clip"]
+    : process.env.WAYLAND_DISPLAY ? ["wl-copy"]
+    : ["xclip", "-selection", "clipboard"];
+  try {
+    const p = spawn(tool[0], tool.slice(1), { stdio: ["pipe", "ignore", "ignore"] });
+    p.on("error", () => {});
+    p.stdin.on("error", () => {});
+    p.stdin.end(text);
+  } catch {}
+  const n = [...text].length;
+  showCopied(`copied ${n} ${n === 1 ? "char" : "chars"} to clipboard`);
+}
+
+/** A short note at the right end of the row above the input. */
+function showCopied(note: string) {
+  const col = Math.max(1, cols() - note.length);
+  const at = (s: string) => w(`\x1b7\x1b[2A\x1b[${col}G${s}\x1b8`);
+  if (copiedTimer) clearTimeout(copiedTimer);
+  at(mint(note));
+  copiedTimer = setTimeout(() => { copiedTimer = null; at(" ".repeat(note.length)); }, 2500);
 }
 
 /** Draws rows at a fixed place on screen (1-based) and puts the cursor back. */
@@ -313,6 +423,7 @@ export function begin(intro: string, h: Handlers) {
   const t = crlf(intro);
   w("\x1b[2J\x1b[H" + t);
   trackCol(t);
+  introRows = wrapStyled(intro.replace(/\n$/, ""), cols());
   const used = intro.replace(ANSI, "").split("\n").reduce((n, l) => n + Math.max(1, Math.ceil(l.length / cols())), 0) - 1;
   const pad = rowsN() - 5 - used;
   if (pad > 0) w("\r\n".repeat(pad));
