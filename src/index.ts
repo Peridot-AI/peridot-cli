@@ -575,7 +575,12 @@ async function main() {
       (broad ? `${amber("This is a very broad folder. Open Peridot in your project folder to keep it focused.")}\n` : "") +
       `${dim("Type a message, / for commands, ! for a shell command.")}\n`,
     {
-    complete: (text) => Object.keys(COMMANDS).map((c) => "/" + c).filter((c) => c.startsWith(text)),
+    // Commands starting with what was typed first, then ones that only contain it
+    commands: (text) => {
+      const q = text.slice(1).toLowerCase();
+      const all = Object.entries(COMMANDS).map(([name, c]) => ({ name: "/" + name, desc: c.desc }));
+      return [...all.filter((c) => c.name.slice(1).startsWith(q)), ...all.filter((c) => !c.name.slice(1).startsWith(q) && c.name.includes(q))];
+    },
     onCycle: () => void cycleMode(),
     onClick: (x, y) => {
       if (x <= PERI_WIDTH && y > PERI_TOP && y <= PERI_TOP + 4) playPeri();

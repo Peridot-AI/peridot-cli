@@ -11,8 +11,8 @@
 // so everything still ends up in the terminal's own scrollback.
 import { emitKeypressEvents } from "node:readline";
 import { spawn } from "node:child_process";
-import { dim, mint, bubbleLine } from "./style";
-import { fit, vis } from "./card";
+import { dim, mint, bold, bubbleLine } from "./style";
+import { fit, vis, cut } from "./card";
 
 const w = (s: string) => process.stdout.write(s);
 const cols = () => Math.max(20, process.stdout.columns || 80);
@@ -25,7 +25,12 @@ let buf = "";
 let cur = 0;
 let busy = false;
 let started = false;
-let hint = "";
+// Command menu shown above the input while typing "/…"
+type MenuItem = { name: string; desc: string };
+const MENU_MAX = 6;
+let menu: MenuItem[] = [];
+let menuSel = 0;
+let menuShown = 0; // menu rows currently on screen, between the output row and the input
 let chromeW = 0; // terminal width the input area was last drawn for
 const lines: string[] = [];
 let histIdx = -1;
@@ -34,8 +39,8 @@ let status = { left: "", right: "" };
 
 type Handlers = {
   onSubmit: (line: string) => void | Promise<void>;
-  /** Commands that start with the typed text (for Tab and the hint under the input) */
-  complete: (text: string) => string[];
+  /** Commands matching the typed text, for the menu above the input */
+  commands: (text: string) => MenuItem[];
   /** Ctrl+C. `hasInput` tells whether there is text in the input */
   onInterrupt: (hasInput: boolean) => void;
   /** Shift+Tab */
@@ -182,7 +187,7 @@ function copyToClipboard(text: string) {
 /** A short note at the right end of the row above the input. */
 function showCopied(note: string) {
   const col = Math.max(1, cols() - note.length);
-  const at = (s: string) => w(`\x1b7\x1b[2A\x1b[${col}G${s}\x1b8`);
+  const at = (s: string) => w(`\x1b7\x1b[${2 + menuShown}A\x1b[${col}G${s}\x1b8`);
   if (copiedTimer) clearTimeout(copiedTimer);
   at(mint(note));
   copiedTimer = setTimeout(() => { copiedTimer = null; at(" ".repeat(note.length)); }, 2500);
@@ -212,11 +217,11 @@ function view() {
 }
 const inputCol = () => 3 + cur - view().start;
 
-/** `status.left` may carry its own colors; the typed-command hint replaces it while you type. */
+/** `status.left` may carry its own colors. */
 function statusRow() {
   const W = cols();
   const right = status.right;
-  const left = fit(hint ? dim(hint) : status.left, Math.max(0, W - right.length - 3));
+  const left = fit(status.left, Math.max(0, W - right.length - 3));
   const gap = Math.max(1, W - vis(left) - right.length - 1);
   return " " + left + " ".repeat(gap) + dim(right);
 }
@@ -224,8 +229,35 @@ function statusRow() {
 /** The rest of the command you are typing, e.g. "age" for "/us" (shown in grey, Tab accepts it). */
 function suggestion() {
   if (!buf.startsWith("/") || buf.includes(" ") || cur !== buf.length) return "";
-  const hit = handlers.complete(buf).find((c) => c.length > buf.length);
-  return hit ? hit.slice(buf.length) : "";
+  const hit = menu[menuSel]?.name;
+  return hit && hit.startsWith(buf) && hit.length > buf.length ? hit.slice(buf.length) : "";
+}
+
+/** The visible part of the menu: up to MENU_MAX rows around the selected command. */
+function menuLines(): string[] {
+  if (!menu.length) return [];
+  const W = cols();
+  const top = Math.max(0, Math.min(menuSel - MENU_MAX + 1, menu.length - MENU_MAX));
+  const nameW = Math.min(24, Math.max(...menu.map((m) => m.name.length)) + 4);
+  return menu.slice(top, top + MENU_MAX).map((m, i) => {
+    const selected = top + i === menuSel;
+    const name = "  " + m.name.padEnd(nameW);
+    const desc = cut(m.desc, Math.max(0, W - name.length - 2));
+    return selected ? bold(mint(name)) + mint(desc) : dim(name + desc);
+  });
+}
+
+/** Recomputes the menu for what is typed and redraws the input area when it changed. */
+function refreshMenu(force = false) {
+  const items = buf.startsWith("/") && !buf.includes(" ") && !busy ? handlers.commands(buf) : [];
+  const same = items.length === menu.length && items.every((m, i) => m.name === menu[i].name);
+  if (!same) menuSel = 0;
+  menu = items;
+  if (!same || force) {
+    toOutput();
+    w("\x1b[0J");
+    writeChrome();
+  } else redrawInput();
 }
 
 function inputRow() {
@@ -239,10 +271,12 @@ function inputRow() {
 function writeChrome() {
   chromeW = cols();
   const rule = dim("─".repeat(cols()));
-  w(`\r\n${rule}\r\n\x1b[2K${inputRow()}\r\n${rule}\r\n\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
+  const lines = menuLines();
+  menuShown = lines.length;
+  w(`${lines.map((l) => `\r\n\x1b[2K${l}`).join("")}\r\n${rule}\r\n\x1b[2K${inputRow()}\r\n${rule}\r\n\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
 }
 
-const toOutput = () => w(`\x1b[2A\x1b[${outCol + 1}G`);
+const toOutput = () => w(`\x1b[${2 + menuShown}A\x1b[${outCol + 1}G`);
 
 /** Appends text to the conversation. */
 export function out(text: string) {
@@ -261,7 +295,7 @@ export const print = (...parts: unknown[]) => out(parts.join(" ") + "\n");
 /** Replaces the content of the output row (used by the thinking animation). */
 export function setLine(line: string) {
   if (!started) return;
-  w(`\x1b[2A\r\x1b[2K${line}\x1b[2B\x1b[${inputCol()}G`);
+  w(`\x1b[${2 + menuShown}A\r\x1b[2K${line}\x1b[${2 + menuShown}B\x1b[${inputCol()}G`);
   outCol = 0;
 }
 
@@ -281,13 +315,6 @@ function redrawInput() {
   w(`\r\x1b[2K${inputRow()}\x1b[${inputCol()}G`);
 }
 
-function updateHint() {
-  const next =
-    buf.startsWith("/") && !buf.includes(" ") ? handlers.complete(buf).join("  ") : "";
-  if (next === hint) return;
-  hint = next;
-  w(`\x1b[2B\r\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
-}
 
 export function setStatus(left: string, right: string) {
   status = { left, right };
@@ -305,8 +332,7 @@ export function clearInput() {
   buf = "";
   cur = 0;
   histIdx = -1;
-  redrawInput();
-  updateHint();
+  refreshMenu();
 }
 
 // ── Keys ──
@@ -328,8 +354,7 @@ function edit(next: string, nextCur: number) {
   buf = next;
   cur = Math.max(0, Math.min(nextCur, next.length));
   histIdx = -1;
-  redrawInput();
-  updateHint();
+  refreshMenu();
 }
 
 function recall(delta: number) {
@@ -343,8 +368,7 @@ function recall(delta: number) {
   buf = histIdx === lines.length ? draft : lines[histIdx];
   if (histIdx === lines.length) histIdx = -1;
   cur = buf.length;
-  redrawInput();
-  updateHint();
+  refreshMenu();
 }
 
 /** Accepts the grey suggestion. Returns false when there is none. */
@@ -365,8 +389,7 @@ async function submit() {
   buf = "";
   cur = 0;
   histIdx = -1;
-  redrawInput();
-  updateHint();
+  refreshMenu();
   if (line) await handlers.onSubmit(line);
 }
 
@@ -378,7 +401,12 @@ function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean; me
   const word = key.ctrl || key.meta;
 
   switch (key.name) {
-    case "return": return void submit();
+    case "return": {
+      // Enter on the menu runs the highlighted command
+      const pick = menu[menuSel]?.name;
+      if (pick && pick !== buf.trim()) { buf = pick; cur = buf.length; }
+      return void submit();
+    }
     case "tab": return key.shift ? handlers.onCycle() : tab();
     case "backspace": return cur > 0 ? edit(buf.slice(0, cur - 1) + buf.slice(cur), cur - 1) : undefined;
     case "delete": return edit(buf.slice(0, cur) + buf.slice(cur + 1), cur);
@@ -388,8 +416,12 @@ function onKey(str: string | undefined, key: { name?: string; ctrl?: boolean; me
       return void ((cur = word ? wordRight() : Math.min(buf.length, cur + 1)), redrawInput());
     case "home": return void ((cur = 0), redrawInput());
     case "end": return void ((cur = buf.length), redrawInput());
-    case "up": return recall(-1);
-    case "down": return recall(1);
+    case "up":
+      if (menu.length) { menuSel = (menuSel - 1 + menu.length) % menu.length; return refreshMenu(true); }
+      return recall(-1);
+    case "down":
+      if (menu.length) { menuSel = (menuSel + 1) % menu.length; return refreshMenu(true); }
+      return recall(1);
   }
   if (key.ctrl) {
     switch (key.name) {
@@ -411,7 +443,7 @@ function relayout() {
   // The terminal re-wrapped what was on screen: the old full-width rule now takes several rows
   const ruleRows = Math.max(1, Math.ceil(chromeW / W));
   outCol = Math.min(outCol, W - 1);
-  w(`\x1b[${ruleRows + 1}A\x1b[${outCol + 1}G\x1b[0J`); // erase the old input area, back on the output row
+  w(`\x1b[${ruleRows + 1 + menuShown}A\x1b[${outCol + 1}G\x1b[0J`); // erase the old input area, back on the output row
   writeChrome();
 }
 
