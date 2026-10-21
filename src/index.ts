@@ -216,6 +216,67 @@ function showResult(call: ToolCall, r: ToolResult) {
   print(dim(`  ⎿ ${out === "No matches." || out === "(empty)" ? out : `${n} line${n === 1 ? "" : "s"}`}`));
 }
 
+// ── Chat history (signed in): every exchange is saved to the account, so /resume can continue it ──
+let convId: number | null = null;
+
+async function saveExchange(question: string, answer: string) {
+  if (!authToken() || !question.trim() || !answer.trim()) return;
+  try {
+    if (convId === null) {
+      const title = question.replace(/\s+/g, " ").trim().slice(0, 60);
+      convId = (await api<{ conversation: { id: number } }>("/conversations", { method: "POST", body: JSON.stringify({ title }) })).conversation.id;
+    }
+    await api(`/conversations/${convId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: question }, { role: "model", content: answer }] }),
+    });
+  } catch {
+    // History is a convenience: a failed save never gets in the way of the chat
+  }
+}
+
+/** "5 min ago" for a database time ("YYYY-MM-DD HH:MM:SS", UTC). */
+function ago(when: string): string {
+  const t = Date.parse(when.replace(" ", "T") + "Z");
+  if (!Number.isFinite(t)) return "";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  if (s < 86400 * 7) { const d = Math.floor(s / 86400); return `${d} day${d === 1 ? "" : "s"} ago`; }
+  return new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** /resume [count]: pick one of the latest chats (newest first) and carry on with it. */
+async function cmdResume(arg: string) {
+  if (!authToken()) return print("Chat history is kept for signed-in users. Use /login.");
+  const count = Math.max(1, Math.min(100, Math.floor(Number(arg)) || 10));
+  const { conversations } = await api<{ conversations: { id: number; title: string; updated_at: string }[] }>("/conversations");
+  const latest = conversations.slice(0, count);
+  if (!latest.length) return print(dim("No saved chats yet."));
+
+  const pick = await select("Resume a chat", latest.map((c) => ({ label: c.title || "Untitled", hint: ago(c.updated_at) })));
+  if (pick === null) return;
+  const chosen = latest[pick];
+  const { messages } = await api<{ messages: { role: "user" | "model"; content: string }[] }>(`/conversations/${chosen.id}`);
+
+  convId = chosen.id;
+  history = messages.map((m) => ({ role: m.role, content: m.content }));
+  agentMessages = messages.map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content }));
+
+  // Show the end of the chat so you know where you left off
+  const SHOWN = 10;
+  if (messages.length > SHOWN) print(dim(`… ${messages.length - SHOWN} earlier messages`));
+  for (const m of messages.slice(-SHOWN)) {
+    if (m.role === "user") out(`${ui.userBubble(m.content)}\n\n`);
+    else {
+      const md = new MarkdownStream();
+      out(`${mint(LOGO)} ${md.push(m.content)}${md.end()}\n\n`);
+    }
+  }
+  print(dim(`Resumed "${chosen.title}" · ${messages.length} messages. Keep typing to continue.`));
+}
+
 async function sendAgent(text: string) {
   // After an interrupted step the history ends with tool results: the new text joins that message
   const last = agentMessages[agentMessages.length - 1];
@@ -226,6 +287,7 @@ async function sendAgent(text: string) {
   abort = new AbortController();
   let thinking: { stop(): void } = { stop() {} };
   let started = false;
+  let reply = ""; // all answer text of this run, saved to the chat history at the end
   let md = new MarkdownStream();
   let pending = "";
   let lastFlush = 0;
@@ -237,6 +299,7 @@ async function sendAgent(text: string) {
     onModelStart: () => { thinking = startThinking(ui.setLine, () => ui.setLine("")); },
     onText: (chunk) => {
       if (!started) { thinking.stop(); started = true; pending = `${mint(LOGO)} `; md = new MarkdownStream(); }
+      reply += chunk;
       pending += md.push(chunk);
       flush();
     },
@@ -276,6 +339,7 @@ async function sendAgent(text: string) {
     abort = null;
     stopCommands();
   }
+  await saveExchange(text, reply);
 }
 
 async function send(text: string) {
@@ -458,6 +522,7 @@ async function cmdLogin() {
 
 async function cmdLogout() {
   delete config.token;
+  convId = null;
   await saveConfig();
   print("Signed out.");
 }
@@ -476,7 +541,8 @@ const COMMANDS: Record<string, Command> = {
   login: { desc: "Sign in to your Peridot account", run: cmdLogin },
   logout: { desc: "Sign out", run: cmdLogout },
   whoami: { desc: "Show the signed-in account", run: cmdWhoami },
-  clear: { desc: "Start a new conversation", run: () => { history = []; agentMessages = []; print(dim("Conversation cleared.")); } },
+  resume: { desc: "Continue one of your recent chats", usage: "[count]", run: cmdResume },
+  clear: { desc: "Start a new conversation", run: () => { history = []; agentMessages = []; convId = null; print(dim("Conversation cleared.")); } },
   exit: { desc: "Quit Peridot", run: () => quit() },
 };
 const ALIASES: Record<string, string> = { quit: "exit", q: "exit", new: "clear", "?": "help" };
