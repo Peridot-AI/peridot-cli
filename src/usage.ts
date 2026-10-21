@@ -15,10 +15,13 @@ const bar = (pct: number, width: number) => {
 const SHADES = [rgb(52, 52, 49), rgb(22, 57, 47), rgb(42, 107, 88), rgb(75, 168, 141), rgb(111, 211, 183)];
 const PLAIN = ["·", "░", "▒", "▓", "█"];
 // "Large" cells are two columns wide (a terminal cell is about twice as tall as wide, so they look
-// square) with a one column gap. "Year" cells are single small squares so all 53 weeks fit.
+// square) with a one column gap. "Year" cells are a single column so all 53 weeks fit.
 export type HeatView = "large" | "year";
-const cell = (level: number, view: HeatView) =>
-  view === "large" ? (color ? SHADES[level]("▇▇") : PLAIN[level].repeat(2)) : color ? SHADES[level]("■") : PLAIN[level];
+// Every level has its own symbol, so the map reads the same with or without colours
+const cell = (level: number, view: HeatView) => {
+  const glyph = view === "large" ? PLAIN[level].repeat(2) : PLAIN[level];
+  return color ? SHADES[level](glyph) : glyph;
+};
 
 const DAY = 86400000;
 
