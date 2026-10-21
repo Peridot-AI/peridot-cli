@@ -14,13 +14,12 @@ const bar = (pct: number, width: number) => {
 // Same shades as the heatmap on the website: from an empty day to the most active one
 const SHADES = [rgb(52, 52, 49), rgb(22, 57, 47), rgb(42, 107, 88), rgb(75, 168, 141), rgb(111, 211, 183)];
 const PLAIN = ["·", "░", "▒", "▓", "█"];
-// "Large" cells are two columns wide (a terminal cell is about twice as tall as wide, so they look
-// square) with a one column gap. "Year" cells are a single column so all 53 weeks fit.
+// Every day is one symbol. "Large" cells add a one column gap between weeks; "year" cells have none,
+// so all 53 weeks fit.
 export type HeatView = "large" | "year";
 // Every level has its own symbol, so the map reads the same with or without colours
 const cell = (level: number, view: HeatView) => {
-  const glyph = view === "large" ? PLAIN[level].repeat(2) : PLAIN[level];
-  return color ? SHADES[level](glyph) : glyph;
+  return color ? SHADES[level](PLAIN[level]) : PLAIN[level];
 };
 
 const DAY = 86400000;
@@ -45,8 +44,8 @@ function heatmap(daily: Daily[], space: number, labelWidth: number, view: HeatVi
     weeks[weeks.length - 1].push({ tokens, future: t > end });
   }
 
-  // Large cells need three columns per week, so narrow terminals show the most recent weeks only
-  const pitch = view === "large" ? 3 : 1;
+  // Large cells need two columns per week, so narrow terminals show the most recent weeks only
+  const pitch = view === "large" ? 2 : 1;
   const keep = Math.min(weeksAll, Math.max(8, Math.floor(space / pitch)));
   const from = weeks.length - keep;
   const shown = weeks.slice(from);
