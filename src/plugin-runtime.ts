@@ -53,31 +53,69 @@ const TOOL_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 
 // `import { definePlugin } from "@peridot/plugin"` resolves to this small module, written next to each plugin
 const SHIM_JS = `export const definePlugin = (plugin) => plugin;\nexport default { definePlugin };\n`;
-const SHIM_DTS = `export type Approval = null | "edit" | "command";
+// Same as packages/plugin/index.d.ts in the Peridot repo (a test keeps them equal)
+export const SHIM_DTS = `/** null: runs without asking. "edit" / "command": the user approves each call (and the tool may write files). */
+export type Approval = null | "edit" | "command";
+
+/** What commands, tools and activate() receive. */
 export interface PluginContext {
+  /** Where the plugin is running */
   client: "cli" | "desktop";
+  /** process.platform of the user's machine */
   platform: string;
+  /** The signed-in Peridot user, or null */
   user: { name?: string; email: string } | null;
+  /** The open project. Paths are relative to its root; anything outside it is refused. */
   workspace: {
+    /** Absolute path of the project, or null when none is open */
     root: string | null;
+    /** A text file's contents (up to 400 KB) */
     readFile(path: string): string;
+    /** Creates or overwrites a file. Only from commands and from tools with approval "edit" or "command". */
     writeFile(path: string, content: string): void;
+    /** Files and folders (folders end with "/"); recursive goes 3 levels deep, 500 entries at most */
     listFiles(path?: string, recursive?: boolean): string[];
+    /** Lines matching a regular expression, as "file:line: text" (100 at most) */
     search(pattern: string, path?: string): string[];
   };
+  /** Shows a line of output to the user (commands) */
   print(text: string): void;
+  /** Debug output (CLI: shown with PERIDOT_DEBUG=1; desktop: the app's console) */
   log(text: string): void;
 }
-export interface PluginCommand { desc: string; usage?: string; run(args: string[], ctx: PluginContext): unknown }
-export interface PluginTool { description: string; input?: Record<string, unknown>; approval?: Approval; run(input: any, ctx: PluginContext): unknown }
+
+/** A slash command, run as /<name> in the CLI and the desktop chat input. */
+export interface PluginCommand {
+  desc: string;
+  /** Shown after the name in help, e.g. "[count]" */
+  usage?: string;
+  run(args: string[], ctx: PluginContext): unknown;
+}
+
+/** A tool the agent can call. Its name for the model is <plugin>__<tool>. */
+export interface PluginTool {
+  /** What the tool does, for the model */
+  description: string;
+  /** JSON Schema of the input object */
+  input?: Record<string, unknown>;
+  approval?: Approval;
+  /** Returns the result text, or { ok, output } to report a failure */
+  run(input: any, ctx: PluginContext): unknown;
+}
+
 export interface Plugin {
+  /** Must match the name in package.json "peridot.name" and what people type in /plugin install */
   name: string;
   version?: string;
   description?: string;
+  /** Keys are command names: lowercase letters, digits and dashes */
   commands?: Record<string, PluginCommand>;
+  /** Keys are tool names: lowercase letters, digits and underscores */
   tools?: Record<string, PluginTool>;
+  /** Runs once when the plugin loads. Cannot write files. */
   activate?(ctx: PluginContext): unknown;
 }
+
 export declare function definePlugin<T extends Plugin>(plugin: T): T;
 `;
 
