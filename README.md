@@ -1,6 +1,6 @@
 # Peridot CLI
 
-[Peridot AI](https://peridot.ai) in your terminal. Start it and chat; everything else is a slash command.
+[Peridot AI](https://tryperidot.io) in your terminal. Start it and chat; everything else is a slash command.
 
 The conversation scrolls above; the input sits at the bottom between two rules, with your account and the current model on the status line. Messages you send are shown on a slightly lighter background.
 
@@ -25,7 +25,7 @@ Type a message, or / for commands.
 | `/login` | Sign in with **Email** (on the Peridot website) or **Google**, both in your browser |
 | `/logout` · `/whoami` | Account |
 | `/clear` | Start a new conversation |
-| `/plugin [list\|search\|install\|uninstall\|installed]` | Browse plugins approved on peridot.ai and install them from GitHub into `~/.config/peridot/plugins` (shared with the desktop app). Their commands appear as `/name`, their tools are offered to the agent |
+| `/plugin [list\|search\|install\|uninstall\|installed]` | Browse plugins approved on tryperidot.io and install them from GitHub into `~/.config/peridot/plugins` (shared with the desktop app). Their commands appear as `/name`, their tools are offered to the agent |
 | `/help` | List commands |
 | `/exit` | Quit |
 
@@ -42,7 +42,7 @@ The folder you start `peridot` in is the **workspace**. When you are signed in, 
 
 Without signing in, Peridot is chat only.
 
-Environment: `PERIDOT_TOKEN` (use instead of the stored token), `PERIDOT_API_URL` (default `https://peridot.ai/api`), `PERIDOT_WEB_URL` (default `https://peridot.ai`).
+Environment: `PERIDOT_TOKEN` (use instead of the stored token), `PERIDOT_API_URL` (default `https://tryperidot.io/api`), `PERIDOT_WEB_URL` (default `https://tryperidot.io`).
 
 Sign-in opens your browser and listens on `127.0.0.1` for the result (Google uses port 53682). Nothing is sent anywhere else, and `Ctrl+C` cancels.
 

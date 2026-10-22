@@ -1,5 +1,5 @@
 // Installed plugins live in ~/.config/peridot/plugins/<name>, shared with the desktop app.
-// Installing downloads the exact commit that was approved on peridot.ai from the plugin's GitHub repository.
+// Installing downloads the exact commit that was approved on tryperidot.io from the plugin's GitHub repository.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile, rename } from "node:fs/promises";

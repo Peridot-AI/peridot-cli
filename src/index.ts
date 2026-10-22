@@ -20,8 +20,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const API = (process.env.PERIDOT_API_URL || "https://peridot.ai/api").replace(/\/+$/, "");
-const WEB = (process.env.PERIDOT_WEB_URL || "https://peridot.ai").replace(/\/+$/, "");
+const API = (process.env.PERIDOT_API_URL || "https://tryperidot.io/api").replace(/\/+$/, "");
+const WEB = (process.env.PERIDOT_WEB_URL || "https://tryperidot.io").replace(/\/+$/, "");
 // Registered as a redirect URI of the Google OAuth client (same one the desktop app uses)
 const GOOGLE_PORT = 53682;
 const CONFIG_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "peridot");
@@ -408,7 +408,7 @@ async function cmdModel(arg: string) {
     choice = models[picked];
   }
   if (!choice) return print(red(`No model matches "${arg || ""}". Use /model to see the list.`));
-  if (choice.locked) return print(amber(`${choice.name} is not included in your plan. See https://peridot.ai/#plans`));
+  if (choice.locked) return print(amber(`${choice.name} is not included in your plan. See https://tryperidot.io/#plans`));
   config.model = choice.id;
   await saveConfig();
   print(`Model set to ${bold(choice.name)}.`);
@@ -604,7 +604,7 @@ async function reloadPlugins(quiet = false) {
   if (!quiet || errors.length) for (const e of errors) print(amber(`Plugin ${e}`));
 }
 
-// ── Plugins: browse the approved ones on peridot.ai, install them from GitHub ──
+// ── Plugins: browse the approved ones on tryperidot.io, install them from GitHub ──
 type RemotePlugin = { name: string; description: string; repo_url: string | null; approved_sha: string | null; author_name: string };
 
 async function cmdPlugin(arg: string) {

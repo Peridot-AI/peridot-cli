@@ -1,6 +1,6 @@
 // Loads installed plugins (see plugins.ts) and runs their commands and agent tools.
 // Plugins are TypeScript modules whose default export is definePlugin({ ... }); Bun runs them directly.
-// They run with the CLI's own permissions: only plugins approved on peridot.ai can be installed.
+// They run with the CLI's own permissions: only plugins approved on tryperidot.io can be installed.
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
