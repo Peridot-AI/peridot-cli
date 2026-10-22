@@ -1,7 +1,8 @@
 // Terminal layout: the conversation scrolls normally above, and a fixed input area sits at the
-// bottom of the output:
+// bottom of the screen:
 //
 //   <output row>       where text is appended (this is also where the thinking animation lives)
+//   (empty rows)       while the conversation is shorter than the screen, so the input stays at the bottom
 //   ──────────────     rule
 //   › your message     input row — the cursor lives here while you type
 //   ──────────────     rule
@@ -42,6 +43,8 @@ const MENU_MAX = 6;
 let menu: MenuItem[] = [];
 let menuSel = 0;
 let menuShown = 0; // menu rows currently on screen, between the output row and the input
+let gapShown = 0; // empty rows between the output row and the menu / input area
+let outRow = 1; // screen row of the output row (1-based)
 let chromeW = 0; // terminal width the input area was last drawn for
 const lines: string[] = [];
 let histIdx = -1;
@@ -181,15 +184,19 @@ export function drawAt(row: number, col: number, rows: string[]) {
   if (draw) w("\x1b7" + draw + "\x1b8");
 }
 
-function trackCol(text: string) {
+/** Follows the cursor through `text` written on the output row: its column, and the rows it moved down. */
+function track(text: string) {
   const W = cols();
+  let down = 0;
   for (const ch of text.replace(ANSI, "")) {
-    if (ch === "\n" || ch === "\r") outCol = 0;
+    if (ch === "\n") { outCol = 0; down++; }
+    else if (ch === "\r") outCol = 0;
     else {
-      if (outCol >= W) outCol = 0;
+      if (outCol >= W) { outCol = 0; down++; }
       outCol++;
     }
   }
+  outRow = Math.min(outRow + down, rowsN());
 }
 
 function view() {
@@ -249,16 +256,23 @@ function inputRow() {
   return `${mint("›")} ${text}${room > 0 ? dim(suggestion().slice(0, room)) : ""}`;
 }
 
-/** Draws the input area below the output row. The cursor must be on the output row. */
+/** Draws the input area at the bottom of the screen, below the output row. The cursor must be on the output row. */
 function writeChrome() {
   chromeW = cols();
   const rule = dim("─".repeat(cols()));
   const lines = menuLines();
   menuShown = lines.length;
-  w(`${lines.map((l) => `\r\n\x1b[2K${l}`).join("")}\r\n${rule}\r\n\x1b[2K${inputRow()}\r\n${rule}\r\n\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
+  // Empty rows down to the input area; once the conversation fills the screen there are none and
+  // writing the input area scrolls the conversation up instead
+  const height = menuShown + 4;
+  gapShown = Math.max(0, rowsN() - height - outRow);
+  outRow = Math.min(outRow, rowsN() - height);
+  w(`${"\r\n\x1b[2K".repeat(gapShown)}${lines.map((l) => `\r\n\x1b[2K${l}`).join("")}\r\n${rule}\r\n\x1b[2K${inputRow()}\r\n${rule}\r\n\x1b[2K${statusRow()}\x1b[2A\x1b[${inputCol()}G`);
 }
 
-const toOutput = () => w(`\x1b[${2 + menuShown}A\x1b[${outCol + 1}G`);
+/** Rows from the input row up to the output row */
+const aboveInput = () => 2 + menuShown + gapShown;
+const toOutput = () => w(`\x1b[${aboveInput()}A\x1b[${outCol + 1}G`);
 
 /** Appends text to the conversation. */
 export function out(text: string) {
@@ -268,8 +282,8 @@ export function out(text: string) {
   const t = crlf(text);
   toOutput();
   w("\x1b[0J" + t);
-  trackCol(t);
-  if (outCol >= cols()) { w("\r\n"); outCol = 0; }
+  track(t);
+  if (outCol >= cols()) { w("\r\n"); outCol = 0; outRow = Math.min(outRow + 1, rowsN()); }
   writeChrome();
 }
 
@@ -278,7 +292,7 @@ export const print = (...parts: unknown[]) => out(parts.join(" ") + "\n");
 /** Replaces the content of the output row (used by the thinking animation). */
 export function setLine(line: string) {
   if (!started) return;
-  w(`\x1b[${2 + menuShown}A\r\x1b[2K${line}\x1b[${2 + menuShown}B\x1b[${inputCol()}G`);
+  w(`\x1b[${aboveInput()}A\r\x1b[2K${line}\x1b[${aboveInput()}B\x1b[${inputCol()}G`);
   outCol = 0;
 }
 
@@ -427,11 +441,11 @@ function relayout() {
   // The terminal re-wrapped what was on screen: the old full-width rule now takes several rows
   const ruleRows = Math.max(1, Math.ceil(chromeW / W));
   outCol = Math.min(outCol, W - 1);
-  w(`\x1b[${ruleRows + 1 + menuShown}A\x1b[${outCol + 1}G\x1b[0J`); // erase the old input area, back on the output row
+  w(`\x1b[${ruleRows + 1 + menuShown + gapShown}A\x1b[${outCol + 1}G\x1b[0J`); // erase the old input area, back on the output row
   writeChrome();
 }
 
-/** Clears the screen and its scrollback, prints `intro` and the input area right below it. */
+/** Clears the screen and its scrollback, prints `intro` and the input area at the bottom. */
 function drawStart(intro: string) {
   const t = crlf(intro);
   if (copiedTimer) { clearTimeout(copiedTimer); copiedTimer = null; }
@@ -444,9 +458,9 @@ function drawStart(intro: string) {
     setMouse(true);
   }
   w("\x1b[2J\x1b[3J\x1b[H" + t);
-  trackCol(t);
-  // The input area follows the intro directly (no padding down to the bottom of the screen), so the
-  // conversation starts right under it and pushes the input down as it grows
+  outRow = 1;
+  track(t);
+  // The conversation continues right under the intro; the input area waits at the bottom of the screen
   writeChrome();
 }
 

@@ -661,10 +661,10 @@ const ALIASES: Record<string, string> = { plugins: "plugin", quit: "exit", q: "e
 
 function printHelp() {
   print(bold("Commands"));
-  for (const [name, c] of Object.entries(COMMANDS)) {
-    print(`  ${mint(("/" + name + (c.usage ? " " + c.usage : "")).padEnd(24))}${c.desc}`);
-  }
-  print(`  ${mint("!command".padEnd(24))}Run a shell command in this folder`);
+  const rows = Object.entries(COMMANDS).map(([name, c]) => ["/" + name + (c.usage ? " " + c.usage : ""), c.desc]);
+  rows.push(["!command", "Run a shell command in this folder"]);
+  const w = Math.max(24, ...rows.map(([l]) => l.length + 2));
+  for (const [label, desc] of rows) print(`  ${mint(label.padEnd(w))}${desc}`);
   print(dim("\nWhen you are signed in, Peridot can read and edit files here and run commands (it asks first in manual mode).\nTab completes commands · Ctrl+C stops a response."));
 }
 
