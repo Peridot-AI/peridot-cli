@@ -57,7 +57,9 @@ Create bots for the project and the agent can hand self-contained parts of a job
 
 The team is saved in `.peridot/team.json` of the project and shared with the desktop app. During a run the hand-offs show up in the conversation (`◆ Lead → Researcher: …`, the bot's tool calls with its name, and its report), and the status line says who is working. Hand-offs go at most two deep, a bot has 25 steps, and its report is cut at 8000 characters.
 
-Environment: `PERIDOT_TOKEN` (use instead of the stored token), `PERIDOT_API_URL` (default `https://api.tryperidot.io/api`), `PERIDOT_WEB_URL` (default `https://tryperidot.io`).
+Environment: `PERIDOT_TOKEN` (use instead of the stored token), `PERIDOT_WEB_URL` (default `https://tryperidot.io`).
+
+The API is always `https://api.tryperidot.io/api`. Only an argument changes it, for example to try a local server: `peridot --api http://localhost:3001/api`. (An environment variable can't, so one left in your shell never sends the CLI somewhere else.)
 
 Sign-in opens your browser and listens on `127.0.0.1` for the result (Google uses port 53682). Nothing is sent anywhere else, and `Ctrl+C` cancels.
 

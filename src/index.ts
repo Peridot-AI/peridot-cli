@@ -22,7 +22,21 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const API = (process.env.PERIDOT_API_URL || "https://api.tryperidot.io/api").replace(/\/+$/, "");
+// The API address is fixed. Only an argument changes it (peridot --api http://localhost:3001/api), so a
+// variable left over in the environment can never send the CLI somewhere else.
+const DEFAULT_API = "https://api.tryperidot.io/api";
+function argValue(name: string): string | undefined {
+  const args = process.argv.slice(2);
+  const i = args.findIndex((a) => a === name || a.startsWith(name + "="));
+  if (i < 0) return undefined;
+  return args[i].includes("=") ? args[i].slice(name.length + 1) : args[i + 1];
+}
+const customApi = argValue("--api");
+if (customApi !== undefined && !/^https?:\/\/[^\s/]+/.test(customApi)) {
+  console.error(`--api needs an address like http://localhost:3001/api (got "${customApi ?? ""}").`);
+  process.exit(1);
+}
+const API = (customApi || DEFAULT_API).replace(/\/+$/, "");
 const WEB = (process.env.PERIDOT_WEB_URL || "https://tryperidot.io").replace(/\/+$/, "");
 // Registered as a redirect URI of the Google OAuth client (same one the desktop app uses)
 const GOOGLE_PORT = 53682;
@@ -134,7 +148,7 @@ function errorText(e: unknown): string {
   const msg = (e as Error)?.message ?? String(e);
   // The network, not the server: say where Peridot tried to connect, since that is what to check
   if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|Unable to connect|fetch failed|ConnectionRefused|ConnectionClosed/i.test(msg)) {
-    const custom = process.env.PERIDOT_API_URL ? ` PERIDOT_API_URL is set to it; unset it to use ${"https://api.tryperidot.io/api"}.` : "";
+    const custom = customApi ? ` You started Peridot with --api; leave it out to use ${DEFAULT_API}.` : "";
     return `Can't reach Peridot at ${API}. Check your internet connection (or proxy/VPN).${custom}`;
   }
   try {
