@@ -12,6 +12,7 @@ import { usageLines, type HeatView } from "./usage";
 import { startScreen, startLines, catchTheFly, PERI_TOP, PERI_WIDTH } from "./mascot";
 import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHooks } from "./agent";
 import { root, runCommand, stopCommands } from "./tools";
+import { installedPlugins, installPlugin, uninstallPlugin, PLUGIN_NAME, PLUGINS_DIR } from "./plugins";
 const { out, print } = ui;
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -536,6 +537,54 @@ async function cmdWhoami() {
   print(`${bold(user.name || user.email)} ${dim(`${user.email} · ${limits?.plan ?? user.plan ?? "free"} plan`)}`);
 }
 
+// ── Plugins: browse the approved ones on peridot.ai, install them from GitHub ──
+type RemotePlugin = { name: string; description: string; repo_url: string | null; author_name: string };
+
+async function cmdPlugin(arg: string) {
+  const [sub = "", name = ""] = arg.trim().split(/\s+/);
+  const n = name.toLowerCase();
+
+  if (sub === "install" || sub === "add") {
+    if (!n) return print(`Usage: ${mint("/plugin install <name>")}`);
+    if (!PLUGIN_NAME.test(n)) return print(red(`Invalid plugin name: ${name}`));
+    const { plugin } = await api<{ plugin: RemotePlugin }>(`/plugins/${encodeURIComponent(n)}`).catch((e) => {
+      throw new Error(/not found/i.test(e.message) ? `No approved plugin named "${n}". See ${"/plugin list"}.` : e.message);
+    });
+    print(dim(`Downloading ${plugin.repo_url}…`));
+    const p = await installPlugin(plugin.name, plugin.repo_url ?? "");
+    return print(`${mint("✓")} Installed ${bold(p.name)} ${dim(`v${p.version} · ${PLUGINS_DIR}`)}`);
+  }
+
+  if (sub === "uninstall" || sub === "remove" || sub === "rm") {
+    if (!n) return print(`Usage: ${mint("/plugin uninstall <name>")}`);
+    return print((await uninstallPlugin(n)) ? `${mint("✓")} Uninstalled ${bold(n)}` : dim(`${n} is not installed.`));
+  }
+
+  if (sub === "installed") {
+    const list = Object.values(await installedPlugins());
+    if (!list.length) return print(dim(`No plugins installed. Browse them with /plugin list.`));
+    print(bold("Installed plugins"));
+    for (const p of list) print(`  ${mint(p.name.padEnd(24))}${dim(`v${p.version} · ${p.repo}`)}`);
+    return;
+  }
+
+  if (sub === "" || sub === "list" || sub === "search") {
+    const q = sub === "search" ? n : "";
+    const [{ plugins }, installed] = await Promise.all([api<{ plugins: RemotePlugin[] }>("/plugins"), installedPlugins()]);
+    const shown = plugins.filter((p) => !q || p.name.includes(q) || p.description.toLowerCase().includes(q));
+    if (!shown.length) return print(dim(q ? `No plugins match "${q}".` : `No plugins available yet. Submit one at ${WEB}/plugins/apply`));
+    print(bold("Plugins"));
+    for (const p of shown) {
+      const mark = installed[p.name] ? mint(" ✓ installed") : "";
+      print(`  ${mint(p.name.padEnd(24))}${cut(p.description.split("\n")[0], 60)}${mark}`);
+    }
+    print(dim(`\n/plugin install <name> · /plugin uninstall <name> · /plugin installed`));
+    return;
+  }
+
+  print(`Usage: ${mint("/plugin")} [list | search <text> | install <name> | uninstall <name> | installed]`);
+}
+
 type Command = { desc: string; usage?: string; run: (arg: string) => Promise<void> | void };
 const COMMANDS: Record<string, Command> = {
   help: { desc: "Show this list", run: () => printHelp() },
@@ -545,10 +594,11 @@ const COMMANDS: Record<string, Command> = {
   logout: { desc: "Sign out", run: cmdLogout },
   whoami: { desc: "Show the signed-in account", run: cmdWhoami },
   resume: { desc: "Continue one of your recent chats", usage: "[count]", run: cmdResume },
+  plugin: { desc: "Browse, install and remove plugins", usage: "[install|uninstall] <name>", run: cmdPlugin },
   clear: { desc: "Start a new conversation", run: () => { history = []; agentMessages = []; convId = null; freshScreen(); } },
   exit: { desc: "Quit Peridot", run: () => quit() },
 };
-const ALIASES: Record<string, string> = { quit: "exit", q: "exit", new: "clear", "?": "help" };
+const ALIASES: Record<string, string> = { plugins: "plugin", quit: "exit", q: "exit", new: "clear", "?": "help" };
 
 function printHelp() {
   print(bold("Commands"));
