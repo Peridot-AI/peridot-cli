@@ -555,12 +555,22 @@ let currentUser: { name?: string; email: string } | null = null;
 let pluginTools: Record<string, ExtraTool & { plugin: string }> = {};
 const pluginCommandNames = new Set<string>();
 
-function pluginCtx(plugin: string): PluginContext {
+/**
+ * `canWrite`: commands the user runs and tools the user approved may write files; read-only tools
+ * (approval: null) and activate() may not, so a plugin can't change files behind the user's back.
+ */
+function pluginCtx(plugin: string, canWrite: boolean): PluginContext {
   return {
     client: "cli",
     platform: process.platform,
     user: currentUser,
-    workspace: workspaceApi,
+    workspace: {
+      ...workspaceApi,
+      writeFile: (path, content) => {
+        if (!canWrite) throw new Error(`The ${plugin} plugin can only write files from a command or a tool with approval "edit".`);
+        workspaceApi.writeFile(path, content);
+      },
+    },
     print: (text) => print(String(text)),
     log: (text) => { if (process.env.PERIDOT_DEBUG) print(dim(`[${plugin}] ${text}`)); },
   };
@@ -570,14 +580,14 @@ async function reloadPlugins(quiet = false) {
   for (const n of pluginCommandNames) delete COMMANDS[n];
   pluginCommandNames.clear();
   pluginTools = {};
-  const { plugins, errors } = await loadPlugins(pluginCtx);
+  const { plugins, errors } = await loadPlugins((name) => pluginCtx(name, false));
   for (const p of plugins) {
     for (const [name, c] of Object.entries(p.commands)) {
       if (COMMANDS[name] || ALIASES[name]) { errors.push(`${p.name}: /${name} is already a command`); continue; }
       COMMANDS[name] = {
         desc: `${c.desc} · ${p.name}`,
         usage: c.usage,
-        run: async (arg) => { await c.run(arg.trim() ? arg.trim().split(/\s+/) : [], pluginCtx(p.name)); },
+        run: async (arg) => { await c.run(arg.trim() ? arg.trim().split(/\s+/) : [], pluginCtx(p.name, true)); },
       };
       pluginCommandNames.add(name);
     }
@@ -587,7 +597,7 @@ async function reloadPlugins(quiet = false) {
         plugin: p.name,
         def: { name: id, description: `[${p.name} plugin] ${t.description}`, input_schema: (t.input as any) ?? { type: "object", properties: {} } },
         approval: t.approval ?? null,
-        run: (input) => runPluginTool(t, input, pluginCtx(p.name)),
+        run: (input) => runPluginTool(t, input, pluginCtx(p.name, !!t.approval)),
       };
     }
   }
