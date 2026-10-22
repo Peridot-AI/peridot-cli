@@ -17,6 +17,8 @@ export function inline(text: string): string {
       return part
         .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, url) => underline(label) + dim(` (${url})`))
         .replace(/\*\*(?!\s)(.+?)\*\*/g, (_, t) => bold(t))
+        // Models often pad the text: "** Note **". Accepted when it starts with a letter, so "2 ** 3 and 4 ** 5" stays as it is
+        .replace(/\*\*[ \t]+(\p{L}[^*\n]*?)[ \t]+\*\*/gu, (_, t) => bold(t))
         .replace(/__(?!\s)(.+?)__/g, (_, t) => bold(t))
         .replace(/~~(?!\s)(.+?)~~/g, (_, t) => strike(t))
         .replace(/(^|[^\w*])\*(?![\s*])(.+?)\*(?!\*)/g, (_, pre, t) => pre + italic(t))
