@@ -25,6 +25,7 @@ Type a message, or / for commands.
 | `/login` | Sign in with **Email** (on the Peridot website) or **Google**, both in your browser |
 | `/logout` · `/whoami` | Account |
 | `/clear` | Start a new conversation |
+| `/team [add\|list\|graph\|show\|set\|access\|link\|unlink\|remove]` | **Your AI team**: bots the agent can hand work to (see below). Just `/team` opens windows to build and edit the team |
 | `/plugin [list\|search\|install\|uninstall\|installed]` | Browse plugins approved on tryperidot.io and install them from GitHub into `~/.config/peridot/plugins` (shared with the desktop app). Their commands appear as `/name`, their tools are offered to the agent |
 | `/help` | List commands |
 | `/exit` | Quit |
@@ -41,6 +42,20 @@ The folder you start `peridot` in is the **workspace**. When you are signed in, 
 - `Ctrl+C` stops the response and any command that is still running.
 
 Without signing in, Peridot is chat only.
+
+## Your AI team
+
+Create bots for the project and the agent can hand self-contained parts of a job to them. Each bot works in parallel with its own context, prompt, model and tools (reading is always allowed; editing files and running commands are switched on per bot), and sends back a report. Edits and commands by a bot ask for approval like the agent's own, one window at a time, with the bot's name in the title.
+
+```
+/team                    windows: the lead, the bots, add a bot, the graph
+/team add researcher     templates: researcher, reviewer, tester, writer (or any name for a blank bot)
+/team access tester run on
+/team link tester researcher
+/team graph              who may hand work to whom, as a tree
+```
+
+The team is saved in `.peridot/team.json` of the project and shared with the desktop app. During a run the hand-offs show up in the conversation (`◆ Lead → Researcher: …`, the bot's tool calls with its name, and its report), and the status line says who is working. Hand-offs go at most two deep, a bot has 25 steps, and its report is cut at 8000 characters.
 
 Environment: `PERIDOT_TOKEN` (use instead of the stored token), `PERIDOT_API_URL` (default `https://tryperidot.io/api`), `PERIDOT_WEB_URL` (default `https://tryperidot.io`).
 

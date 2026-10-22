@@ -1,5 +1,9 @@
 // Windows drawn over the conversation: a rounded box on the terminal's alternate screen. When one
 // closes, the conversation underneath is back exactly as it was.
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { dim, bold } from "./style";
 
 import { pauseMouse, resumeMouse } from "./mouse";
@@ -21,7 +25,7 @@ export function fit(s: string, n: number): string {
   return out + "…\x1b[0m";
 }
 
-export type Key = { name?: string; ctrl?: boolean; meta?: boolean };
+export type Key = { name?: string; ctrl?: boolean; meta?: boolean; sequence?: string };
 
 /** Width of the box and of the text inside it. */
 export function boxSize(wide = false) {
@@ -51,7 +55,7 @@ export function renderBox(title: string, body: string[], footer: string, width: 
  */
 export function popup<T>(
   render: (size: { width: number; text: number; maxRows: number }) => string[],
-  onKey: (key: Key, done: (value: T) => void, redraw: () => void) => void,
+  onKey: (key: Key, done: (value: T) => void, redraw: () => void, str?: string) => void,
   cancelValue: T,
   wide = false
 ): Promise<T> {
@@ -81,10 +85,10 @@ export function popup<T>(
       resumeMouse();
       resolve(value);
     };
-    const handler = (_: string, key: Key) => {
+    const handler = (str: string | undefined, key: Key) => {
       if (!key) return;
       if (key.name === "escape" || (key.ctrl && key.name === "c")) return done(cancelValue);
-      onKey(key, done, draw);
+      onKey(key, done, draw, str);
     };
     process.stdin.on("keypress", handler);
     process.stdout.on("resize", draw);
@@ -143,4 +147,95 @@ export function showCard(title: string, lines: (text: number) => string[], onKey
     undefined,
     true
   );
+}
+
+/** Window with check boxes: Space toggles, Enter confirms. Resolves to the new states, or null when cancelled. */
+export function checklist(
+  title: string,
+  items: { label: string; hint?: string; checked: boolean }[],
+  details: string[] = []
+): Promise<boolean[] | null> {
+  const state = items.map((i) => i.checked);
+  let index = 0;
+  return popup<boolean[] | null>(
+    ({ width, text }) => {
+      const body = items.map((it, i) => {
+        const label = cut(`${state[i] ? "[x]" : "[ ]"} ${it.label}`, text - 2);
+        const room = text - 2 - label.length - 1;
+        const hint = it.hint && room > 4 ? " " + dim(cut(it.hint, room)) : "";
+        return i === index ? `\x1b[38;2;111;211;183m❯ ${label}\x1b[0m${hint}` : `  ${label}${hint}`;
+      });
+      return renderBox(title, details.length ? [...details, "", ...body] : body, "↑/↓ move · Space toggle · Enter save · Esc cancel", width);
+    },
+    (key, done, redraw) => {
+      if (key.name === "up") { index = (index - 1 + items.length) % items.length; redraw(); }
+      else if (key.name === "down") { index = (index + 1) % items.length; redraw(); }
+      else if (key.name === "space") { state[index] = !state[index]; redraw(); }
+      else if (key.name === "return") done([...state]);
+    },
+    null
+  );
+}
+
+/** One line of text to type. Resolves to the text (Enter), or null when cancelled (Esc). */
+export function promptText(title: string, initial = "", details: string[] = [], max = 200): Promise<string | null> {
+  let value = initial;
+  let cur = value.length;
+  return popup<string | null>(
+    ({ width, text }) => {
+      // The text wraps inside the window; a block marks the cursor
+      const room = text - 2;
+      const shown = value.slice(0, cur) + "█" + value.slice(cur);
+      const rows: string[] = [];
+      for (let i = 0; i < shown.length; i += room) rows.push(shown.slice(i, i + room));
+      const body = [...details, ...(details.length ? [""] : []), ...(rows.length ? rows : ["█"])];
+      return renderBox(title, body, `Enter save · Esc cancel${value.length > max * 0.9 ? ` · ${value.length}/${max}` : ""}`, width);
+    },
+    (key, done, redraw, str) => {
+      if (key.name === "return") return done(value.trim());
+      if (key.name === "backspace") { if (cur > 0) { value = value.slice(0, cur - 1) + value.slice(cur); cur--; } return redraw(); }
+      if (key.name === "delete") { value = value.slice(0, cur) + value.slice(cur + 1); return redraw(); }
+      if (key.name === "left") { cur = Math.max(0, cur - 1); return redraw(); }
+      if (key.name === "right") { cur = Math.min(value.length, cur + 1); return redraw(); }
+      if (key.name === "home" || (key.ctrl && key.name === "a")) { cur = 0; return redraw(); }
+      if (key.name === "end" || (key.ctrl && key.name === "e")) { cur = value.length; return redraw(); }
+      if (key.ctrl && key.name === "u") { value = value.slice(cur); cur = 0; return redraw(); }
+      if (str && !key.ctrl && !key.meta && !/[\x00-\x1f\x7f]/.test(str) && value.length < max) {
+        value = value.slice(0, cur) + str + value.slice(cur);
+        cur += str.length;
+        redraw();
+      }
+    },
+    null
+  );
+}
+
+/** Opens `text` in $VISUAL / $EDITOR and returns what was saved, or null when the editor failed. */
+export function editInEditor(text: string, extension = "md"): string | null {
+  const dir = mkdtempSync(join(tmpdir(), "peridot-"));
+  const file = join(dir, `edit.${extension}`);
+  writeFileSync(file, text);
+  const editor = (process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "vi")).trim();
+  const [cmd, ...args] = editor.split(/\s+/);
+
+  // The editor owns the terminal while it runs
+  const saved = process.stdin.listeners("keypress") as ((...a: any[]) => void)[];
+  saved.forEach((l) => process.stdin.off("keypress", l));
+  pauseMouse();
+  process.stdin.pause();
+  try { process.stdin.setRawMode(false); } catch {}
+  w("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25h");
+  let result: string | null = null;
+  try {
+    const run = spawnSync(cmd, [...args, file], { stdio: "inherit" });
+    if (!run.error && run.status === 0) result = readFileSync(file, "utf8");
+  } finally {
+    w("\x1b[?1049l\x1b[?25h");
+    try { process.stdin.setRawMode(true); } catch {}
+    process.stdin.resume();
+    saved.forEach((l) => process.stdin.on("keypress", l));
+    resumeMouse();
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return result;
 }

@@ -10,7 +10,9 @@ import * as ui from "./ui";
 import { select, showCard, cut } from "./card";
 import { usageLines, type HeatView } from "./usage";
 import { startScreen, startLines, catchTheFly, PERI_TOP, PERI_WIDTH } from "./mascot";
-import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHooks } from "./agent";
+import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHooks, type TeamEvent } from "./agent";
+import { botName, emptyTeam, loadTeam, type TeamConfig } from "./team";
+import { cmdTeam } from "./team-ui";
 import { root, runCommand, stopCommands, workspaceApi } from "./tools";
 import { loadPlugins, runPluginTool, toolId, type PluginContext } from "./plugin-runtime";
 import type { ExtraTool } from "./agent";
@@ -154,6 +156,29 @@ async function sendChat(text: string) {
   }
 }
 
+// ── Your AI team: the bots of this project, who is working and how many tasks went where ──
+let currentTeam: TeamConfig = emptyTeam();
+const teamCounts: Record<string, number> = {};
+const teamWorking = new Map<string, number>();
+const nameOf = (id: string) => botName(currentTeam, id);
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+
+function onTeam(e: TeamEvent) {
+  if (e.type === "delegate") {
+    teamCounts[`${e.from}>${e.to}`] = (teamCounts[`${e.from}>${e.to}`] ?? 0) + 1;
+    teamWorking.set(e.to, (teamWorking.get(e.to) ?? 0) + 1);
+    paintStatus();
+    print(`${mint("◆")} ${bold(nameOf(e.from))} ${dim("→")} ${bold(nameOf(e.to))}${dim(": " + cut(oneLine(e.task), 100))}`);
+  } else {
+    const left = (teamWorking.get(e.from) ?? 1) - 1;
+    if (left > 0) teamWorking.set(e.from, left);
+    else teamWorking.delete(e.from);
+    paintStatus();
+    const line = `  ⎿ ${nameOf(e.from)} → ${nameOf(e.to)} ${e.ok ? "✓" : "✗"} ${cut(oneLine(e.output) || "(no report)", 110)}`;
+    print(e.ok ? dim(line) : red(line));
+  }
+}
+
 // ── Agent: reads and edits files and runs commands in the folder Peridot was opened in ──
 const TOOL_LABEL: Record<string, string> = {
   list_files: "List", read_file: "Read", search: "Search", write_file: "Write", edit_file: "Edit", run_command: "Run",
@@ -191,11 +216,21 @@ function approvalDetails(call: ToolCall): string[] {
   return [bold(String(i.path)) + dim(` (${String(i.content ?? "").split("\n").length} lines)`), ...lines(i.content, 8).map((l) => dim(l))];
 }
 
-async function approve(call: ToolCall): Promise<boolean> {
+// Teammates can ask at the same time, but windows open one at a time
+let approvals: Promise<unknown> = Promise.resolve();
+function approve(call: ToolCall): Promise<boolean> {
+  const run = approvals.then(() => askApproval(call));
+  approvals = run.catch(() => {});
+  return run;
+}
+
+async function askApproval(call: ToolCall): Promise<boolean> {
   if (config.mode === "auto") return true;
-  const title = isPluginTool(call)
+  if (abort?.signal.aborted) return false; // stopped while waiting in the queue
+  const who = call.by ? `${nameOf(call.by)}: ` : "";
+  const title = who + (isPluginTool(call)
     ? "Allow this plugin tool?"
-    : call.name === "run_command" ? "Run this command?" : call.name === "edit_file" ? "Apply this edit?" : "Write this file?";
+    : call.name === "run_command" ? "Run this command?" : call.name === "edit_file" ? "Apply this edit?" : "Write this file?");
   const choice = await select(
     title,
     [{ label: "Yes" }, { label: "Yes, and don't ask again", hint: "(switches to auto approval)" }, { label: "No" }],
@@ -210,10 +245,11 @@ async function approve(call: ToolCall): Promise<boolean> {
   return choice === 0 || choice === 1;
 }
 
-function showResult(call: ToolCall, r: ToolResult) {
-  if (r.denied) return print(amber("  ⎿ Denied"));
+/** How a finished tool call is shown under its line */
+function resultLines(call: ToolCall, r: ToolResult): string[] {
+  if (r.denied) return [amber("  ⎿ Denied")];
   const out = r.output.trim();
-  if (!r.ok) return print(red("  ⎿ " + cut(out.split("\n")[0], 160)));
+  if (!r.ok) return [red("  ⎿ " + cut(out.split("\n")[0], 160))];
   if (call.name === "run_command") {
     const lines = out.split("\n");
     const exit = /^\[exit code (-?\d+|null)\]$/.exec(lines[lines.length - 1] ?? "");
@@ -221,12 +257,21 @@ function showResult(call: ToolCall, r: ToolResult) {
     const shown = body.slice(0, 8).map((l, i) => dim((i === 0 ? "  ⎿ " : "    ") + cut(l, 160)));
     if (body.length > 8) shown.push(dim(`    … ${body.length - 8} more lines`));
     if (exit && exit[1] !== "0") shown.push(red(`    exit code ${exit[1]}`));
-    return print(shown.join("\n") || dim("  ⎿ (no output)"));
+    return shown.length ? shown : [dim("  ⎿ (no output)")];
   }
-  if (call.name === "write_file" || call.name === "edit_file") return print(dim("  ⎿ " + out));
-  if (isPluginTool(call)) return print(dim("  ⎿ " + cut(out.split("\n")[0] || "(done)", 160) + (out.includes("\n") ? ` (+${out.split("\n").length - 1} lines)` : "")));
+  if (call.name === "write_file" || call.name === "edit_file") return [dim("  ⎿ " + out)];
+  if (isPluginTool(call)) return [dim("  ⎿ " + cut(out.split("\n")[0] || "(done)", 160) + (out.includes("\n") ? ` (+${out.split("\n").length - 1} lines)` : ""))];
   const n = out.split("\n").length;
-  print(dim(`  ⎿ ${out === "No matches." || out === "(empty)" ? out : `${n} line${n === 1 ? "" : "s"}`}`));
+  return [dim(`  ⎿ ${out === "No matches." || out === "(empty)" ? out : `${n} line${n === 1 ? "" : "s"}`}`)];
+}
+
+function showResult(call: ToolCall, r: ToolResult) {
+  // A hand-off is reported by onTeam. A teammate's calls run in parallel with others, so each result
+  // is one line that says whose it is.
+  if (call.name === "delegate") return;
+  const lines = resultLines(call, r);
+  if (!call.by) return print(lines.join("\n"));
+  print(lines[0].replace("⎿ ", `⎿ ${nameOf(call.by)} · `));
 }
 
 // ── Chat history (signed in): every exchange is saved to the account, so /resume can continue it ──
@@ -327,9 +372,15 @@ async function sendAgent(text: string) {
       started = false;
     },
     approve,
-    onToolStart: (call) => print(`${mint("●")} ${bold(TOOL_LABEL[call.name] ?? call.name.replace("__", " · "))}${dim("(" + cut(toolArg(call), 100) + ")")}`),
+    onToolStart: (call) => {
+      if (call.name === "delegate") return; // shown as a hand-off by onTeam
+      const who = call.by ? dim(`${nameOf(call.by)} · `) : "";
+      print(`${mint("●")} ${who}${bold(TOOL_LABEL[call.name] ?? call.name.replace("__", " · "))}${dim("(" + cut(toolArg(call), 100) + ")")}`);
+    },
     onToolEnd: showResult,
+    onTeam,
   };
+  currentTeam = loadTeam(root);
 
   try {
     await runAgent(agentMessages, {
@@ -339,6 +390,7 @@ async function sendAgent(text: string) {
       effort: "Medium",
       workspace: root.split(/[\\/]/).pop() || root,
       extraTools: pluginTools,
+      team: currentTeam.bots.length ? currentTeam : undefined,
     }, hooks, abort.signal);
   } catch (e) {
     thinking.stop();
@@ -355,6 +407,7 @@ async function sendAgent(text: string) {
     thinking.stop();
     abort = null;
     stopCommands();
+    if (teamWorking.size) { teamWorking.clear(); paintStatus(); }
   }
   await saveExchange(text, reply);
 }
@@ -664,6 +717,11 @@ const COMMANDS: Record<string, Command> = {
   logout: { desc: "Sign out", run: cmdLogout },
   whoami: { desc: "Show the signed-in account", run: cmdWhoami },
   resume: { desc: "Continue one of your recent chats", usage: "[count]", run: cmdResume },
+  team: {
+    desc: "Your AI team: bots the lead can hand work to",
+    usage: "[add|list|graph|…]",
+    run: (arg) => cmdTeam(arg, { root, print: (...p) => print(...p), models: loadModels, counts: () => teamCounts }),
+  },
   plugin: { desc: "Browse, install and remove plugins", usage: "[install|uninstall] <name>", run: cmdPlugin },
   clear: { desc: "Start a new conversation", run: () => { history = []; agentMessages = []; convId = null; freshScreen(); } },
   exit: { desc: "Quit Peridot", run: () => quit() },
@@ -676,7 +734,7 @@ function printHelp() {
   rows.push(["!command", "Run a shell command in this folder"]);
   const w = Math.max(24, ...rows.map(([l]) => l.length + 2));
   for (const [label, desc] of rows) print(`  ${mint(label.padEnd(w))}${desc}`);
-  print(dim("\nWhen you are signed in, Peridot can read and edit files here and run commands (it asks first in manual mode).\nTab completes commands · Ctrl+C stops a response."));
+  print(dim("\nWhen you are signed in, Peridot can read and edit files here and run commands (it asks first in manual mode).\nWith bots in /team, the agent can hand parts of a job to them.\nTab completes commands · Ctrl+C stops a response."));
 }
 
 function quit() {
@@ -690,9 +748,10 @@ let signedIn = false;
 
 function paintStatus() {
   const auto = config.mode === "auto";
+  const hint = teamWorking.size ? mint(`◆ ${[...teamWorking.keys()].map(nameOf).join(", ")} working`) : dim("(shift+tab to cycle)");
   const left = auto
-    ? `${bold(amber("▶▶ auto approval on"))} ${dim("(shift+tab to cycle)")}`
-    : `${bold(mint("▶ manual approval"))} ${dim("(shift+tab to cycle)")}`;
+    ? `${bold(amber("▶▶ auto approval on"))} ${hint}`
+    : `${bold(mint("▶ manual approval"))} ${hint}`;
   ui.setStatus(left, `${signedIn ? "" : "not signed in · "}${modelName || "default model"} · /help`);
 }
 
