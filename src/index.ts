@@ -132,6 +132,11 @@ async function streamAnswer(thinking: { stop(): void }): Promise<string> {
 /** Provider errors sometimes arrive as raw JSON ({"error":{"message":…}}); keep just the message. */
 function errorText(e: unknown): string {
   const msg = (e as Error)?.message ?? String(e);
+  // The network, not the server: say where Peridot tried to connect, since that is what to check
+  if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|Unable to connect|fetch failed|ConnectionRefused|ConnectionClosed/i.test(msg)) {
+    const custom = process.env.PERIDOT_API_URL ? ` PERIDOT_API_URL is set to it; unset it to use ${"https://tryperidot.io/api"}.` : "";
+    return `Can't reach Peridot at ${API}. Check your internet connection (or proxy/VPN).${custom}`;
+  }
   try {
     const data = JSON.parse(msg);
     return data?.error?.message ?? data?.message ?? msg;
