@@ -25,6 +25,7 @@ Type a message, or / for commands.
 | `/login` | Sign in with **Email** (on the Peridot website) or **Google**, both in your browser |
 | `/logout` · `/whoami` | Account |
 | `/clear` | Start a new conversation |
+| `/plugin [list\|search\|install\|uninstall\|installed]` | Browse plugins approved on peridot.ai and install them from GitHub into `~/.config/peridot/plugins` (shared with the desktop app). Their commands appear as `/name`, their tools are offered to the agent |
 | `/help` | List commands |
 | `/exit` | Quit |
 

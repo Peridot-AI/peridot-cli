@@ -4,7 +4,14 @@ import { NEEDS_APPROVAL, runTool, type ToolName } from "./tools";
 
 export type Block = { type: string; [k: string]: any };
 export type ApiMessage = { role: "user" | "assistant"; content: string | Block[] };
-export interface ToolCall { id: string; name: ToolName; input: Record<string, any> }
+export interface ToolCall { id: string; name: string; input: Record<string, any> }
+
+/** An agent tool added by a plugin, under its <plugin>__<tool> name */
+export interface ExtraTool {
+  def: { name: string; description: string; input_schema: Record<string, unknown> };
+  approval: "edit" | "command" | null;
+  run(input: Record<string, any>): Promise<ToolResult>;
+}
 export type ToolResult = { ok: boolean; output: string; denied?: boolean };
 
 export interface AgentHooks {
@@ -25,6 +32,7 @@ export interface AgentOptions {
   model: string;
   effort: string;
   workspace: string;
+  extraTools?: Record<string, ExtraTool>;
 }
 
 const MAX_STEPS = 40;
@@ -33,7 +41,14 @@ async function modelTurn(messages: ApiMessage[], opts: AgentOptions, onText: (c:
   const res = await fetch(opts.url, {
     method: "POST",
     headers: opts.headers(),
-    body: JSON.stringify({ messages, model: opts.model, effort: opts.effort, workspace: opts.workspace, platform: process.platform }),
+    body: JSON.stringify({
+      messages,
+      model: opts.model,
+      effort: opts.effort,
+      workspace: opts.workspace,
+      platform: process.platform,
+      tools: Object.values(opts.extraTools ?? {}).map((t) => t.def),
+    }),
     signal,
   });
   if (!res.ok || !res.body) {
@@ -92,10 +107,12 @@ export async function runAgent(messages: ApiMessage[], opts: AgentOptions, hooks
         result = { ok: false, output: "Interrupted by the user before this ran." };
       } else {
         hooks.onToolStart(call);
-        if (NEEDS_APPROVAL[call.name] && !(await hooks.approve(call))) {
+        const extra = opts.extraTools?.[call.name];
+        const approval = extra ? extra.approval : NEEDS_APPROVAL[call.name as ToolName];
+        if (approval && !(await hooks.approve(call))) {
           result = { ok: false, output: "The user denied this action. Do not retry it; ask what they want instead.", denied: true };
         } else {
-          result = await runTool(call.name, call.input);
+          result = extra ? await extra.run(call.input) : await runTool(call.name, call.input);
         }
         hooks.onToolEnd(call, result);
       }

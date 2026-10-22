@@ -11,7 +11,9 @@ import { select, showCard, cut } from "./card";
 import { usageLines, type HeatView } from "./usage";
 import { startScreen, startLines, catchTheFly, PERI_TOP, PERI_WIDTH } from "./mascot";
 import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHooks } from "./agent";
-import { root, runCommand, stopCommands } from "./tools";
+import { root, runCommand, stopCommands, workspaceApi } from "./tools";
+import { loadPlugins, runPluginTool, toolId, type PluginContext } from "./plugin-runtime";
+import type { ExtraTool } from "./agent";
 import { installedPlugins, installPlugin, uninstallPlugin, PLUGIN_NAME, PLUGINS_DIR } from "./plugins";
 const { out, print } = ui;
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -157,8 +159,11 @@ const TOOL_LABEL: Record<string, string> = {
   list_files: "List", read_file: "Read", search: "Search", write_file: "Write", edit_file: "Edit", run_command: "Run",
 };
 
+const isPluginTool = (call: ToolCall) => !!pluginTools[call.name];
+
 function toolArg(call: ToolCall) {
   const i = call.input;
+  if (isPluginTool(call)) return JSON.stringify(i ?? {});
   if (call.name === "search") return `${i.pattern}${i.path && i.path !== "." ? ` in ${i.path}` : ""}`;
   if (call.name === "run_command") return String(i.command ?? "");
   return String(i.path ?? ".");
@@ -171,6 +176,10 @@ function approvalDetails(call: ToolCall): string[] {
     const all = String(t ?? "").split("\n");
     return [...all.slice(0, n), ...(all.length > n ? [dim(`… ${all.length - n} more lines`)] : [])];
   };
+  if (isPluginTool(call)) {
+    const t = pluginTools[call.name];
+    return [bold(`${t.plugin} plugin · ${call.name.split("__")[1]}`), dim(t.def.description), ...lines(JSON.stringify(i ?? {}, null, 2), 8)];
+  }
   if (call.name === "run_command") return [bold("Run in this folder:"), ...lines(i.command, 8).map((l) => `$ ${l}`)];
   if (call.name === "edit_file") {
     return [
@@ -184,7 +193,9 @@ function approvalDetails(call: ToolCall): string[] {
 
 async function approve(call: ToolCall): Promise<boolean> {
   if (config.mode === "auto") return true;
-  const title = call.name === "run_command" ? "Run this command?" : call.name === "edit_file" ? "Apply this edit?" : "Write this file?";
+  const title = isPluginTool(call)
+    ? "Allow this plugin tool?"
+    : call.name === "run_command" ? "Run this command?" : call.name === "edit_file" ? "Apply this edit?" : "Write this file?";
   const choice = await select(
     title,
     [{ label: "Yes" }, { label: "Yes, and don't ask again", hint: "(switches to auto approval)" }, { label: "No" }],
@@ -213,6 +224,7 @@ function showResult(call: ToolCall, r: ToolResult) {
     return print(shown.join("\n") || dim("  ⎿ (no output)"));
   }
   if (call.name === "write_file" || call.name === "edit_file") return print(dim("  ⎿ " + out));
+  if (isPluginTool(call)) return print(dim("  ⎿ " + cut(out.split("\n")[0] || "(done)", 160) + (out.includes("\n") ? ` (+${out.split("\n").length - 1} lines)` : "")));
   const n = out.split("\n").length;
   print(dim(`  ⎿ ${out === "No matches." || out === "(empty)" ? out : `${n} line${n === 1 ? "" : "s"}`}`));
 }
@@ -315,7 +327,7 @@ async function sendAgent(text: string) {
       started = false;
     },
     approve,
-    onToolStart: (call) => print(`${mint("●")} ${bold(TOOL_LABEL[call.name] ?? call.name)}${dim("(" + cut(toolArg(call), 100) + ")")}`),
+    onToolStart: (call) => print(`${mint("●")} ${bold(TOOL_LABEL[call.name] ?? call.name.replace("__", " · "))}${dim("(" + cut(toolArg(call), 100) + ")")}`),
     onToolEnd: showResult,
   };
 
@@ -326,6 +338,7 @@ async function sendAgent(text: string) {
       model: config.model || "fast",
       effort: "Medium",
       workspace: root.split(/[\\/]/).pop() || root,
+      extraTools: pluginTools,
     }, hooks, abort.signal);
   } catch (e) {
     thinking.stop();
@@ -537,6 +550,50 @@ async function cmdWhoami() {
   print(`${bold(user.name || user.email)} ${dim(`${user.email} · ${limits?.plan ?? user.plan ?? "free"} plan`)}`);
 }
 
+// ── Installed plugins: their commands join COMMANDS, their tools are offered to the agent ──
+let currentUser: { name?: string; email: string } | null = null;
+let pluginTools: Record<string, ExtraTool & { plugin: string }> = {};
+const pluginCommandNames = new Set<string>();
+
+function pluginCtx(plugin: string): PluginContext {
+  return {
+    client: "cli",
+    platform: process.platform,
+    user: currentUser,
+    workspace: workspaceApi,
+    print: (text) => print(String(text)),
+    log: (text) => { if (process.env.PERIDOT_DEBUG) print(dim(`[${plugin}] ${text}`)); },
+  };
+}
+
+async function reloadPlugins(quiet = false) {
+  for (const n of pluginCommandNames) delete COMMANDS[n];
+  pluginCommandNames.clear();
+  pluginTools = {};
+  const { plugins, errors } = await loadPlugins(pluginCtx);
+  for (const p of plugins) {
+    for (const [name, c] of Object.entries(p.commands)) {
+      if (COMMANDS[name] || ALIASES[name]) { errors.push(`${p.name}: /${name} is already a command`); continue; }
+      COMMANDS[name] = {
+        desc: `${c.desc} · ${p.name}`,
+        usage: c.usage,
+        run: async (arg) => { await c.run(arg.trim() ? arg.trim().split(/\s+/) : [], pluginCtx(p.name)); },
+      };
+      pluginCommandNames.add(name);
+    }
+    for (const [name, t] of Object.entries(p.tools)) {
+      const id = toolId(p.name, name);
+      pluginTools[id] = {
+        plugin: p.name,
+        def: { name: id, description: `[${p.name} plugin] ${t.description}`, input_schema: (t.input as any) ?? { type: "object", properties: {} } },
+        approval: t.approval ?? null,
+        run: (input) => runPluginTool(t, input, pluginCtx(p.name)),
+      };
+    }
+  }
+  if (!quiet || errors.length) for (const e of errors) print(amber(`Plugin ${e}`));
+}
+
 // ── Plugins: browse the approved ones on peridot.ai, install them from GitHub ──
 type RemotePlugin = { name: string; description: string; repo_url: string | null; author_name: string };
 
@@ -552,12 +609,14 @@ async function cmdPlugin(arg: string) {
     });
     print(dim(`Downloading ${plugin.repo_url}…`));
     const p = await installPlugin(plugin.name, plugin.repo_url ?? "");
-    return print(`${mint("✓")} Installed ${bold(p.name)} ${dim(`v${p.version} · ${PLUGINS_DIR}`)}`);
+    print(`${mint("✓")} Installed ${bold(p.name)} ${dim(`v${p.version} · ${PLUGINS_DIR}`)}`);
+    return reloadPlugins();
   }
 
   if (sub === "uninstall" || sub === "remove" || sub === "rm") {
     if (!n) return print(`Usage: ${mint("/plugin uninstall <name>")}`);
-    return print((await uninstallPlugin(n)) ? `${mint("✓")} Uninstalled ${bold(n)}` : dim(`${n} is not installed.`));
+    print((await uninstallPlugin(n)) ? `${mint("✓")} Uninstalled ${bold(n)}` : dim(`${n} is not installed.`));
+    return reloadPlugins(true);
   }
 
   if (sub === "installed") {
@@ -636,6 +695,7 @@ async function refreshStatus() {
   paintStatus();
   const me = authToken() ? await api<{ user: any; limits?: any }>("/auth/me").catch(() => null) : null;
   signedIn = !!me;
+  currentUser = me ? { name: me.user.name, email: me.user.email } : null;
   const models = await loadModels().catch(() => []);
   modelName = models.find((m) => m.id === (config.model || ""))?.name ?? config.model ?? "";
   start.plan = planName(me);
@@ -709,6 +769,7 @@ async function main() {
     authToken() ? Promise.race([api<{ user: any; limits?: any }>("/auth/me").catch(() => null), timeout]) : null,
     Promise.race([loadModels().catch(() => null), timeout]),
   ]);
+  currentUser = me ? { name: me.user.name, email: me.user.email } : null;
   start.folder = where;
   start.broad = broad;
   start.model = models?.find((m) => m.id === (config.model || "fast"))?.name ?? (config.model || "Default model");
@@ -761,6 +822,7 @@ async function main() {
     },
   });
   refreshStatus();
+  reloadPlugins(true);
 }
 
 process.on("exit", () => { ui.mouseOff(); process.stdout.write("\x1b[?25h"); });

@@ -161,3 +161,18 @@ export async function runTool(name: string, input: unknown): Promise<{ ok: boole
     return { ok: false, output: (err as Error).message || String(err) };
   }
 }
+
+/** What plugins get as ctx.workspace: the same folder confinement as the agent's tools. */
+export const workspaceApi = {
+  root,
+  readFile: (p: string) => readText(inside(p)),
+  writeFile: (p: string, content: string) => void writeFile({ path: p, content }),
+  listFiles: (p = ".", recursive = false) => {
+    const out = listFiles({ path: p, recursive });
+    return out === "(empty)" ? [] : out.split("\n");
+  },
+  search: (pattern: string, p = ".") => {
+    const out = search({ pattern, path: p });
+    return out === "No matches." ? [] : out.split("\n");
+  },
+};
