@@ -13,6 +13,7 @@ import { startScreen, startLines, catchTheFly, PERI_TOP, PERI_WIDTH } from "./ma
 import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHooks, type TeamEvent } from "./agent";
 import { botName, emptyTeam, loadTeam, type TeamConfig } from "./team";
 import { cmdTeam } from "./team-ui";
+import { finishPlan, planLines, type PlanStep } from "./cowork";
 import { root, runCommand, stopCommands, workspaceApi } from "./tools";
 import { loadPlugins, runPluginTool, toolId, type PluginContext } from "./plugin-runtime";
 import type { ExtraTool } from "./agent";
@@ -45,7 +46,7 @@ const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 type Msg = { role: "user" | "model"; content: string };
 type Mode = "auto" | "manual";
-type Config = { token?: string; model?: string; mode?: Mode };
+type Config = { token?: string; model?: string; mode?: Mode; /** Cowork: plan the work, do it, show the progress */ cowork?: boolean };
 type Model = { id: string; name: string; badge?: string; desc: string; locked?: boolean };
 
 let config: Config = {};
@@ -89,7 +90,7 @@ async function streamAnswer(thinking: { stop(): void }): Promise<string> {
     const res = await fetch(`${API}/chat/stream`, {
       method: "POST",
       headers: headers(),
-      body: JSON.stringify({ messages: history, model: config.model || "fast" }),
+      body: JSON.stringify({ messages: history, model: config.model || "fast", ...(config.cowork ? { mode: "cowork" } : {}) }),
       signal: abort.signal,
     });
     if (!res.ok || !res.body) {
@@ -284,7 +285,20 @@ function resultLines(call: ToolCall, r: ToolResult): string[] {
   return [dim(`  ⎿ ${out === "No matches." || out === "(empty)" ? out : `${n} line${n === 1 ? "" : "s"}`}`)];
 }
 
+// Cowork: the plan is drawn each time it changes (not when an update repeats what is already shown)
+let lastPlan = "";
+let shownPlan: PlanStep[] = [];
+function showPlan(steps: PlanStep[]) {
+  if (!steps.length) return;
+  const key = JSON.stringify(steps);
+  if (key === lastPlan) return;
+  lastPlan = key;
+  shownPlan = steps;
+  print(planLines(steps, process.stdout.columns || 80).join("\n"));
+}
+
 function showResult(call: ToolCall, r: ToolResult) {
+  if (call.name === "update_plan") return;
   // A hand-off is reported by onTeam. A teammate's calls run in parallel with others, so each result
   // is one line that says whose it is.
   if (call.name === "delegate") return;
@@ -365,6 +379,8 @@ async function sendAgent(text: string) {
   else agentMessages.push({ role: "user", content: text });
 
   abort = new AbortController();
+  lastPlan = "";
+  shownPlan = [];
   let thinking: { stop(): void } = { stop() {} };
   let started = false;
   let reply = ""; // all answer text of this run, saved to the chat history at the end
@@ -391,8 +407,9 @@ async function sendAgent(text: string) {
       started = false;
     },
     approve,
+    onPlan: showPlan,
     onToolStart: (call) => {
-      if (call.name === "delegate") return; // shown as a hand-off by onTeam
+      if (call.name === "delegate" || call.name === "update_plan") return; // shown as a hand-off, and as the plan
       const who = call.by ? dim(`${nameOf(call.by)} · `) : "";
       print(`${mint("●")} ${who}${bold(TOOL_LABEL[call.name] ?? call.name.replace("__", " · "))}${dim("(" + cut(toolArg(call), 100) + ")")}`);
     },
@@ -410,7 +427,10 @@ async function sendAgent(text: string) {
       workspace: root.split(/[\\/]/).pop() || root,
       extraTools: pluginTools,
       team: currentTeam.bots.length ? currentTeam : undefined,
+      cowork: !!config.cowork,
     }, hooks, abort.signal);
+    // The task is over: a step still in progress was the last thing done
+    if (shownPlan.some((s) => s.status === "doing")) showPlan(finishPlan(shownPlan));
   } catch (e) {
     thinking.stop();
     pending += md.end();
@@ -484,6 +504,22 @@ async function cmdModel(arg: string) {
   config.model = choice.id;
   await saveConfig();
   print(`Model set to ${bold(choice.name)}.`);
+}
+
+/** /cowork switches Cowork on or off (or says which it is). With it on, the agent starts with a plan and shows its progress. */
+async function cmdCowork(arg: string) {
+  const a = arg.trim().toLowerCase();
+  if (a && !["on", "off", "status"].includes(a)) return print(`Usage: ${mint("/cowork")} [on | off]`);
+  if (a !== "status" && a !== "") config.cowork = a === "on";
+  else if (a === "") config.cowork = !config.cowork;
+  if (a !== "status") await saveConfig();
+  paintStatus();
+  print(
+    config.cowork
+      ? `${mint("◆")} Cowork is ${bold("on")}. Describe the outcome you want: Peridot plans the work, does it and shows its progress. ${dim("/cowork off to switch it off.")}`
+      : `Cowork is ${bold("off")}. ${dim("/cowork turns it on: describe the outcome, Peridot plans and does the work.")}`
+  );
+  if (config.cowork && !authToken()) print(dim("Signed out, Cowork writes the plan and the result in its answer. Sign in with /login to let it work in this folder."));
 }
 
 async function cmdUsage() {
@@ -741,6 +777,7 @@ const COMMANDS: Record<string, Command> = {
     usage: "[add|list|graph|…]",
     run: (arg) => cmdTeam(arg, { root, print: (...p) => print(...p), models: loadModels, counts: () => teamCounts }),
   },
+  cowork: { desc: "Cowork: describe the outcome, the agent plans and does the work", usage: "[on|off]", run: cmdCowork },
   plugin: { desc: "Browse, install and remove plugins", usage: "[install|uninstall] <name>", run: cmdPlugin },
   clear: { desc: "Start a new conversation", run: () => { history = []; agentMessages = []; convId = null; freshScreen(); } },
   exit: { desc: "Quit Peridot", run: () => quit() },
@@ -768,9 +805,10 @@ let signedIn = false;
 function paintStatus() {
   const auto = config.mode === "auto";
   const hint = teamWorking.size ? mint(`◆ ${[...teamWorking.keys()].map(nameOf).join(", ")} working`) : dim("(shift+tab to cycle)");
+  const cowork = config.cowork ? `${bold(mint("◆ cowork"))} ${dim("·")} ` : "";
   const left = auto
-    ? `${bold(amber("▶▶ auto approval on"))} ${hint}`
-    : `${bold(mint("▶ manual approval"))} ${hint}`;
+    ? `${cowork}${bold(amber("▶▶ auto approval on"))} ${hint}`
+    : `${cowork}${bold(mint("▶ manual approval"))} ${hint}`;
   ui.setStatus(left, `${signedIn ? "" : "not signed in · "}${modelName || "default model"} · /help`);
 }
 

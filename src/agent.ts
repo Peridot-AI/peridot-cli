@@ -2,6 +2,7 @@
 // model's tool calls; the tools run here, so the loop lives in the CLI.
 import { NEEDS_APPROVAL, runTool, type ToolName } from "./tools";
 import { LEAD_ID, MAX_BOT_RESULT, TEAM_MAX_DEPTH, type Bot, type BotToolName, type TeamConfig } from "./team";
+import { normalizePlan, type PlanStep } from "./cowork";
 
 export type Block = { type: string; [k: string]: any };
 export type ApiMessage = { role: "user" | "assistant"; content: string | Block[] };
@@ -32,6 +33,8 @@ export interface AgentHooks {
   onToolStart(call: ToolCall): void;
   onToolEnd(call: ToolCall, result: ToolResult): void;
   onTeam?(event: TeamEvent): void;
+  /** Cowork: the agent's plan, whole, each time it changes */
+  onPlan?(steps: PlanStep[]): void;
 }
 
 export interface AgentOptions {
@@ -48,6 +51,8 @@ export interface AgentOptions {
   caller?: string;
   depth?: number;
   maxSteps?: number;
+  /** Cowork: the agent plans the work, does it and shows its progress */
+  cowork?: boolean;
 }
 
 const MAX_STEPS = 40;
@@ -65,6 +70,7 @@ async function modelTurn(messages: ApiMessage[], opts: AgentOptions, onText: (c:
       platform: process.platform,
       tools: Object.values(opts.extraTools ?? {}).map((t) => t.def),
       ...(opts.team?.bots.length ? { team: opts.team, actor: opts.actor ?? null, caller: opts.caller ?? null, depth: opts.depth ?? 0 } : {}),
+      ...(opts.cowork && !opts.actor ? { mode: "cowork" } : {}),
     }),
     signal,
   });
@@ -121,7 +127,7 @@ async function delegate(call: ToolCall, opts: AgentOptions, hooks: AgentHooks, s
     const messages: ApiMessage[] = [{ role: "user", content: task }];
     await runAgent(
       messages,
-      { ...opts, extraTools: undefined, model: target.model || opts.model, actor: target.id, caller: from, depth: depth + 1, maxSteps: BOT_MAX_STEPS },
+      { ...opts, extraTools: undefined, model: target.model || opts.model, actor: target.id, caller: from, depth: depth + 1, maxSteps: BOT_MAX_STEPS, cowork: false },
       {
         // The teammate's own words go back to the caller as its report, not to the screen
         onModelStart: () => {},
@@ -168,7 +174,11 @@ export async function runAgent(messages: ApiMessage[], opts: AgentOptions, hooks
       let result: ToolResult;
       const extra = opts.extraTools?.[call.name];
       const approval = extra ? extra.approval : NEEDS_APPROVAL[call.name as ToolName];
-      if (opts.actor && call.name !== "delegate" && !self?.tools.includes(call.name as BotToolName)) {
+      if (call.name === "update_plan" && !opts.actor) {
+        // Cowork's plan only shows the user what the agent is doing: nothing to approve, nothing to run
+        hooks.onPlan?.(normalizePlan(call.input.steps));
+        result = { ok: true, output: "Plan updated." };
+      } else if (opts.actor && call.name !== "delegate" && !self?.tools.includes(call.name as BotToolName)) {
         // A teammate only gets the tools the user gave it, even if the model asks for another
         result = { ok: false, output: `You don't have the tool "${call.name}".` };
       } else if (call.name === "delegate") {

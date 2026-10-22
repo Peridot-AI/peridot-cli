@@ -25,6 +25,7 @@ Type a message, or / for commands.
 | `/login` | Sign in with **Email** (on the Peridot website) or **Google**, both in your browser |
 | `/logout` · `/whoami` | Account |
 | `/clear` | Start a new conversation |
+| `/cowork [on\|off]` | **Cowork**: switch on, then describe the outcome and the agent plans the work, does it and shows its progress (the status line says `◆ cowork`) |
 | `/team [add\|list\|graph\|show\|set\|access\|link\|unlink\|remove]` | **Your AI team**: bots the agent can hand work to (see below). Just `/team` opens windows to build and edit the team |
 | `/plugin [list\|search\|install\|uninstall\|installed]` | Browse plugins approved on tryperidot.io and install them from GitHub into `~/.config/peridot/plugins` (shared with the desktop app). Their commands appear as `/name`, their tools are offered to the agent |
 | `/help` | List commands |
