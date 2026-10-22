@@ -1,5 +1,5 @@
 // Installed plugins live in ~/.config/peridot/plugins/<name>, shared with the desktop app.
-// Installing downloads the plugin's GitHub repository (only plugins approved on peridot.ai are offered).
+// Installing downloads the exact commit that was approved on peridot.ai from the plugin's GitHub repository.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile, rename } from "node:fs/promises";
@@ -12,7 +12,7 @@ const INDEX = join(PLUGINS_DIR, "installed.json");
 // Same rule as the server: what people type in /plugin install <name>
 export const PLUGIN_NAME = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
 
-export type InstalledPlugin = { name: string; version: string; repo: string; installedAt: string };
+export type InstalledPlugin = { name: string; version: string; repo: string; sha?: string; installedAt: string };
 
 export async function installedPlugins(): Promise<Record<string, InstalledPlugin>> {
   try {
@@ -43,12 +43,13 @@ function untar(file: string, dest: string): Promise<void> {
   });
 }
 
-export async function installPlugin(name: string, repoUrl: string): Promise<InstalledPlugin> {
+export async function installPlugin(name: string, repoUrl: string, sha: string): Promise<InstalledPlugin> {
   if (!PLUGIN_NAME.test(name)) throw new Error(`Invalid plugin name: ${name}`);
   const slug = githubSlug(repoUrl);
   if (!slug) throw new Error(`This plugin has no GitHub repository to install from (${repoUrl || "none"}).`);
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("This plugin has no approved version to install yet.");
 
-  const res = await fetch(`https://codeload.github.com/${slug}/tar.gz/HEAD`);
+  const res = await fetch(`https://codeload.github.com/${slug}/tar.gz/${sha}`);
   if (!res.ok) throw new Error(`Could not download ${slug} from GitHub (${res.status}).`);
 
   await mkdir(PLUGINS_DIR, { recursive: true });
@@ -69,7 +70,7 @@ export async function installPlugin(name: string, repoUrl: string): Promise<Inst
     await rm(dest, { recursive: true, force: true });
     await rename(staging, dest);
 
-    const entry: InstalledPlugin = { name, version, repo: `https://github.com/${slug}`, installedAt: new Date().toISOString() };
+    const entry: InstalledPlugin = { name, version, repo: `https://github.com/${slug}`, sha, installedAt: new Date().toISOString() };
     const index = await installedPlugins();
     index[name] = entry;
     await saveIndex(index);

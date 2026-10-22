@@ -595,7 +595,7 @@ async function reloadPlugins(quiet = false) {
 }
 
 // ── Plugins: browse the approved ones on peridot.ai, install them from GitHub ──
-type RemotePlugin = { name: string; description: string; repo_url: string | null; author_name: string };
+type RemotePlugin = { name: string; description: string; repo_url: string | null; approved_sha: string | null; author_name: string };
 
 async function cmdPlugin(arg: string) {
   const [sub = "", name = ""] = arg.trim().split(/\s+/);
@@ -607,8 +607,8 @@ async function cmdPlugin(arg: string) {
     const { plugin } = await api<{ plugin: RemotePlugin }>(`/plugins/${encodeURIComponent(n)}`).catch((e) => {
       throw new Error(/not found/i.test(e.message) ? `No approved plugin named "${n}". See ${"/plugin list"}.` : e.message);
     });
-    print(dim(`Downloading ${plugin.repo_url}…`));
-    const p = await installPlugin(plugin.name, plugin.repo_url ?? "");
+    print(dim(`Downloading ${plugin.repo_url} @ ${(plugin.approved_sha ?? "").slice(0, 7)}…`));
+    const p = await installPlugin(plugin.name, plugin.repo_url ?? "", plugin.approved_sha ?? "");
     print(`${mint("✓")} Installed ${bold(p.name)} ${dim(`v${p.version} · ${PLUGINS_DIR}`)}`);
     return reloadPlugins();
   }
@@ -634,7 +634,8 @@ async function cmdPlugin(arg: string) {
     if (!shown.length) return print(dim(q ? `No plugins match "${q}".` : `No plugins available yet. Submit one at ${WEB}/plugins/apply`));
     print(bold("Plugins"));
     for (const p of shown) {
-      const mark = installed[p.name] ? mint(" ✓ installed") : "";
+      const inst = installed[p.name];
+      const mark = !inst ? "" : inst.sha && p.approved_sha && inst.sha !== p.approved_sha ? amber(" ↑ update: /plugin install " + p.name) : mint(" ✓ installed");
       print(`  ${mint(p.name.padEnd(24))}${cut(p.description.split("\n")[0], 60)}${mark}`);
     }
     print(dim(`\n/plugin install <name> · /plugin uninstall <name> · /plugin installed`));
