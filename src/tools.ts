@@ -152,6 +152,15 @@ const TOOLS: Record<string, (input: Input) => string | Promise<string>> = {
   run_command: runCommand,
 };
 
+/** PERIDOT.md in the workspace root: the user's standing instructions for the agent, or null */
+export function projectInstructions(): string | null {
+  try {
+    return readText(inside("PERIDOT.md"));
+  } catch {
+    return null;
+  }
+}
+
 export async function runTool(name: string, input: unknown): Promise<{ ok: boolean; output: string }> {
   const fn = TOOLS[name];
   if (!fn) return { ok: false, output: `Unknown tool: ${name}` };

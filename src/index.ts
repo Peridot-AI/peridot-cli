@@ -14,7 +14,7 @@ import { runAgent, type ApiMessage, type ToolCall, type ToolResult, type AgentHo
 import { botName, emptyTeam, loadTeam, type TeamConfig } from "./team";
 import { cmdTeam } from "./team-ui";
 import { finishPlan, planLines, type PlanStep } from "./cowork";
-import { root, runCommand, stopCommands, workspaceApi } from "./tools";
+import { projectInstructions, root, runCommand, stopCommands, workspaceApi } from "./tools";
 import { loadPlugins, runPluginTool, toolId, type PluginContext } from "./plugin-runtime";
 import type { ExtraTool } from "./agent";
 import { installedPlugins, installPlugin, uninstallPlugin, PLUGIN_NAME, PLUGINS_DIR } from "./plugins";
@@ -428,6 +428,8 @@ async function sendAgent(text: string) {
       extraTools: pluginTools,
       team: currentTeam.bots.length ? currentTeam : undefined,
       cowork: !!config.cowork,
+      // Read for every message, so edits to PERIDOT.md count right away
+      instructions: projectInstructions(),
     }, hooks, abort.signal);
     // The task is over: a step still in progress was the last thing done
     if (shownPlan.some((s) => s.status === "doing")) showPlan(finishPlan(shownPlan));

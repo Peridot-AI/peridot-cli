@@ -53,6 +53,8 @@ export interface AgentOptions {
   maxSteps?: number;
   /** Cowork: the agent plans the work, does it and shows its progress */
   cowork?: boolean;
+  /** PERIDOT.md from the workspace root (null = none) */
+  instructions?: string | null;
 }
 
 const MAX_STEPS = 40;
@@ -71,6 +73,7 @@ async function modelTurn(messages: ApiMessage[], opts: AgentOptions, onText: (c:
       tools: Object.values(opts.extraTools ?? {}).map((t) => t.def),
       ...(opts.team?.bots.length ? { team: opts.team, actor: opts.actor ?? null, caller: opts.caller ?? null, depth: opts.depth ?? 0 } : {}),
       ...(opts.cowork && !opts.actor ? { mode: "cowork" } : {}),
+      ...(opts.instructions ? { instructions: opts.instructions } : {}),
     }),
     signal,
   });
