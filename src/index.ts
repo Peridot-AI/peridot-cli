@@ -654,6 +654,33 @@ async function cmdLogout() {
   print("Signed out.");
 }
 
+// ── Sharing a chat and inviting friends ──
+/** /share: a public, read-only copy of this chat at tryperidot.io/share/<id>; "/share stop" removes it. */
+async function cmdShare(arg: string) {
+  if (!authToken()) return print("Sign in with /login to share chats.");
+  if (convId === null) return print(dim("Nothing to share yet: send a message first."));
+  if (arg.trim() === "stop") {
+    await api(`/conversations/${convId}/share`, { method: "DELETE" });
+    return print("Stopped sharing. The link no longer works.");
+  }
+  const { share } = await api<{ share: { id: string } }>(`/conversations/${convId}/share`, { method: "POST" });
+  const link = `${WEB}/share/${share.id}`;
+  ui.copyToClipboard(link);
+  print(`${bold("Shared:")} ${mint(link)}`);
+  print(dim("Anyone with the link can read this chat as it is now. Run /share again to update it, /share stop to stop sharing."));
+}
+
+/** /invite: your invite link and how many friends joined */
+async function cmdInvite() {
+  if (!authToken()) return print("Sign in with /login to get your invite link.");
+  const r = await api<{ code: string; invited: number; paid: number; earnedCents: number; friendPercentOff: number; referrerCreditCents: number }>("/referrals");
+  const link = `${WEB}/?ref=${r.code}`;
+  ui.copyToClipboard(link);
+  print(`${bold("Your invite link:")} ${mint(link)}`);
+  print(dim(`Friends get ${r.friendPercentOff}% off their first month; you get €${r.referrerCreditCents / 100} of credit when they first pay.`));
+  print(`${r.invited} signed up · ${r.paid} on a paid plan · €${(r.earnedCents / 100).toFixed(2).replace(/\.00$/, "")} credit earned`);
+}
+
 async function cmdWhoami() {
   if (!authToken()) return print("Not signed in (anonymous). Use /login.");
   const { user, limits } = await api<{ user: any; limits?: any }>("/auth/me");
@@ -774,6 +801,8 @@ const COMMANDS: Record<string, Command> = {
   logout: { desc: "Sign out", run: cmdLogout },
   whoami: { desc: "Show the signed-in account", run: cmdWhoami },
   resume: { desc: "Continue one of your recent chats", usage: "[count]", run: cmdResume },
+  share: { desc: "Share this chat as a public link (copied)", usage: "[stop]", run: cmdShare },
+  invite: { desc: "Your invite link: friends get a discount, you get credit", run: cmdInvite },
   team: {
     desc: "Your AI team: bots the lead can hand work to",
     usage: "[add|list|graph|…]",

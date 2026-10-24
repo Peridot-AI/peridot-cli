@@ -149,7 +149,7 @@ function paintSelection() {
   if (draw) process.stdout.write("\x1b7" + draw + "\x1b8");
 }
 
-function copyToClipboard(text: string) {
+export function copyToClipboard(text: string) {
   // OSC 52 asks the terminal itself (works over SSH too); the system tool covers terminals without it
   w(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
   const tool =
