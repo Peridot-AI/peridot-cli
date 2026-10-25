@@ -10,7 +10,8 @@ const TARGETS: Record<string, { target: string; out: string }> = {
 };
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const commits = countCommits(root);
+// scripts/release.ts in the main repo passes the count it published (it adds one for uncommitted changes)
+const commits = Number(process.env.PERIDOT_VERSION_COMMITS) || countCommits(root);
 if (!commits) {
   console.error("Could not count commits with git (is this a full clone?)");
   process.exit(1);
