@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 import http from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { startThinking } from "./thinking";
 import { MarkdownStream } from "./markdown";
 import { VERSION } from "./version";
+import { cleanupOldBinary, latestVersion, selfUpdate } from "./update";
 import { mint, dim, bold, red, amber } from "./style";
 import * as ui from "./ui";
 import { select, showCard, cut } from "./card";
@@ -671,6 +672,30 @@ async function cmdShare(arg: string) {
 }
 
 /** /invite: your invite link and how many friends joined */
+// ── Updates ──
+/** Newer version found at start, shown as a notice; /update installs it. */
+let newVersion: string | null = null;
+
+function updateNotice(v: string) {
+  print(`${amber("Your version is not up to date")} ${dim(`(${VERSION} → ${v})`)}  Type ${mint("/update")} to update.`);
+}
+
+async function cmdUpdate() {
+  const v = newVersion ?? (await latestVersion());
+  if (!v) return print(`${mint("✓")} Peridot is up to date ${dim(`(${VERSION})`)}.`);
+  print(dim(`Downloading Peridot ${v}…`));
+  let shown = -1;
+  const installed = await selfUpdate((pct) => {
+    // A line every 25% is enough in a scrolling chat
+    const step = Math.floor(pct / 25) * 25;
+    if (step > shown && step < 100) { shown = step; print(dim(`  ${step}%`)); }
+  });
+  ui.end(`${mint("✓")} Updated to Peridot ${installed}. Restarting…`);
+  // Start the new binary in this terminal and leave with its exit code
+  const r = spawnSync(process.execPath, process.argv.slice(2), { stdio: "inherit" });
+  process.exit(r.status ?? 0);
+}
+
 async function cmdInvite() {
   if (!authToken()) return print("Sign in with /login to get your invite link.");
   const r = await api<{ code: string; invited: number; paid: number; earnedCents: number; friendPercentOff: number; referrerCreditCents: number }>("/referrals");
@@ -802,6 +827,7 @@ const COMMANDS: Record<string, Command> = {
   whoami: { desc: "Show the signed-in account", run: cmdWhoami },
   resume: { desc: "Continue one of your recent chats", usage: "[count]", run: cmdResume },
   share: { desc: "Share this chat as a public link (copied)", usage: "[stop]", run: cmdShare },
+  update: { desc: "Update Peridot to the latest version", run: cmdUpdate },
   invite: { desc: "Your invite link: friends get a discount, you get credit", run: cmdInvite },
   team: {
     desc: "Your AI team: bots the lead can hand work to",
@@ -981,6 +1007,8 @@ async function main() {
   });
   refreshStatus();
   reloadPlugins(true);
+  cleanupOldBinary();
+  latestVersion().then((v) => { newVersion = v; if (v) updateNotice(v); });
 }
 
 process.on("exit", () => { ui.mouseOff(); process.stdout.write("\x1b[?25h"); });

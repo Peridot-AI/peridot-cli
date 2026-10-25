@@ -28,3 +28,6 @@ function current(): string {
 }
 
 export const VERSION = current();
+
+/** A release build (scripts/build.ts); runs from source never look for updates. */
+export const IS_RELEASE = typeof PERIDOT_COMMITS === "number";
